@@ -656,7 +656,7 @@ contains
 
           if (info == psb_success_) call psb_spmm(-sone,base_a,&
                & vy2l,sone,vty,&
-               & base_desc,info,work=work,trans=trans)
+               & base_desc,info,trans=trans)
           if (info /= psb_success_) then
             call psb_errpush(psb_err_internal_error_,name,&
                  & a_err='Error during residue')
@@ -706,7 +706,7 @@ contains
                  & base_desc,info)        
             if (info == psb_success_) call psb_spmm(-sone,base_a,&
                  & vy2l,sone,vty,&
-                 & base_desc,info,work=work,trans=trans)
+                 & base_desc,info,trans=trans)
           end if
           if (info == psb_success_) &
                & call p%precv(level+1)%map_rstr(sone,vty,&
@@ -741,7 +741,7 @@ contains
                  & base_desc,info)
             if (info == psb_success_) call psb_spmm(-sone,base_a,&
                  & vy2l, sone,vty,base_desc,info,&
-                 & work=work,trans=trans)
+                 & trans=trans)
             if (info /= psb_success_) then
               call psb_errpush(psb_err_internal_error_,name,&
                    & a_err='Error during residue')
@@ -899,7 +899,7 @@ contains
                & base_desc,info)
 
           if (info == psb_success_) call psb_spmm(-sone,base_a,&
-               & vy2l,sone,vty,base_desc,info,work=work,trans=trans)
+               & vy2l,sone,vty,base_desc,info,trans=trans)
           if (info /= psb_success_) then
             call psb_errpush(psb_err_internal_error_,name,&
                  & a_err='Error during residue')
@@ -961,7 +961,7 @@ contains
                & szero,vty,base_desc,info)
           call psb_spmm(-sone,base_a,vy2l,&
                & sone,vty,base_desc,info,&
-               & work=work,trans=trans)
+               & trans=trans)
           if (info /= psb_success_) then
             call psb_errpush(psb_err_internal_error_,name,&
                  & a_err='Error during residue')
@@ -1572,7 +1572,7 @@ contains
         
         if (info == psb_success_) call psb_spmm(-sone,p%precv(level)%base_a,&
              & mlwrk(level)%y2l,sone,mlwrk(level)%ty,&
-             & p%precv(level)%base_desc,info,work=work,trans=trans)
+             & p%precv(level)%base_desc,info,trans=trans)
         if (info /= psb_success_) then
           call psb_errpush(psb_err_internal_error_,name,&
                & a_err='Error during residue')
@@ -1633,7 +1633,7 @@ contains
              & p%precv(level)%base_desc,info)
         call psb_spmm(-sone,p%precv(level)%base_a,mlwrk(level)%y2l,&
              & sone,mlwrk(level)%tx,p%precv(level)%base_desc,info,&
-             & work=work,trans=trans)
+             & trans=trans)
         if (info /= psb_success_) then
           call psb_errpush(psb_err_internal_error_,name,&
                & a_err='Error during residue')

@@ -118,7 +118,7 @@ subroutine amg_d_jac_solver_apply_vect(alpha,sv,x,beta,y,desc_data,trans,&
           call psb_geaxpby(done,x,dzero,tx,desc_data,info)
           call psb_geaxpby(done,y,dzero,ty,desc_data,info)
           call psb_spmm(-done,sv%a,ty,done,tx,desc_data,info,&
-               & work=aux,trans=trans_, doswap=.false.)
+               & trans=trans_, doswap=.false.)
           call ty%mlt(done,sv%dv,tx,dzero,info,conjgx=trans_)
 
         case('U')
@@ -130,7 +130,7 @@ subroutine amg_d_jac_solver_apply_vect(alpha,sv,x,beta,y,desc_data,trans,&
           call psb_geaxpby(done,x,dzero,tx,desc_data,info)
           call psb_geaxpby(done,initu,dzero,ty,desc_data,info)
           call psb_spmm(-done,sv%a,ty,done,tx,desc_data,info,&
-               & work=aux,trans=trans_, doswap=.false.)
+               & trans=trans_, doswap=.false.)
           call ty%mlt(done,sv%dv,tx,dzero,info,conjgx=trans_)
 
         case default
@@ -146,7 +146,7 @@ subroutine amg_d_jac_solver_apply_vect(alpha,sv,x,beta,y,desc_data,trans,&
           !
           call psb_geaxpby(done,x,dzero,tx,desc_data,info)
           call psb_spmm(-done,sv%a,ty,done,tx,desc_data,info,&
-               & work=aux,trans=trans_, doswap=.false.)
+               & trans=trans_, doswap=.false.)
           if (info /= psb_success_) exit
           call ty%mlt(done,sv%dv,tx,done,info,conjgx=trans_)
           if (info /= psb_success_) exit

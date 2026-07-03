@@ -39,7 +39,7 @@ install: all
 		 mkdir -p  $(INSTALL_SAMPLESDIR)/simple &&\
 	 	 mkdir -p  $(INSTALL_SAMPLESDIR)/advanced && \
 		(cd samples/simple; /bin/cp -fr pdegen fileread $(INSTALL_SAMPLESDIR)/simple ) && \
-		(cd samples/advanced; /bin/cp -fr pdegen fileread $(INSTALL_SAMPLESDIR)/advanced )
+		(cd samples/advanced; /bin/cp -fr pdegen fileread nested $(INSTALL_SAMPLESDIR)/advanced )
 cleanlib:
 	(cd lib; /bin/rm -f *.a *$(.mod) *$(.fh))
 	(cd include; /bin/rm -f *.a *$(.mod) *$(.fh))
@@ -53,6 +53,7 @@ samplesclean: clean
 	(cd samples/simple/pdegen && $(MAKE) clean)
 	(cd samples/advanced/fileread && $(MAKE) clean)
 	(cd samples/advanced/pdegen && $(MAKE) clean)
+	(cd samples/advanced/nested && $(MAKE) clean)
 
 check: all
 	make check -C samples/advanced/pdegen

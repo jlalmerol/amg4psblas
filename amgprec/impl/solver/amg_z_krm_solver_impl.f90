@@ -214,7 +214,7 @@ subroutine amg_z_krm_solver_apply_vect(alpha,sv,x,beta,y,desc_data,&
     call psb_krylov(sv%method,sv%a,sv%prec,x,z,sv%eps,&
          & desc_data,info,itmax=sv%itmax,itrace=sv%itrace,&
          & istop=sv%istopc,irst=sv%irst)
-!!$  call sv%prec%apply(x,z,desc_data,info,trans=trans,work=work)
+!!$  call sv%prec%apply(x,z,desc_data,info,trans=trans)
     call psb_geaxpby(alpha,z,beta,y,desc_data,info)
   else
     call psb_geaxpby(zone,x,zzero,sv%x_local,sv%desc_local,info)
@@ -265,7 +265,7 @@ subroutine amg_z_krm_solver_apply(alpha,sv,x,beta,y,desc_data,&
 
   call psb_geasb(z,desc_data,info,scratch=.true.)
 
-  call sv%prec%apply(x,z,desc_data,info,trans=trans,work=work)
+  call sv%prec%apply(x,z,desc_data,info,trans=trans)
 
   call psb_geaxpby(alpha,z,beta,y,desc_data,info)
 

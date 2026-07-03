@@ -280,7 +280,7 @@ subroutine amg_cprecaply1(prec,x,desc_data,info,trans)
     goto 9999      
   end if
 
-  call prec%apply(x,ww,desc_data,info,trans=trans,work=w1)
+  call prec%apply(x,ww,desc_data,info,trans=trans)
   if (info /= psb_success_) then
     call psb_errpush(psb_err_from_subroutine_,name,a_err='amg_precaply')
     goto 9999

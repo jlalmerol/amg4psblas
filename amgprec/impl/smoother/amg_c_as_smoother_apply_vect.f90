@@ -170,7 +170,7 @@ subroutine amg_c_as_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
         call psb_geaxpby(cone,y,czero,ty,desc_data,info)
         if (info == 0) call sm%apply_restr(ty,trans_,aux,info)
         if (info == 0) call psb_spmm(-cone,sm%nd,ty,cone,ww,sm%desc_data,info,&
-             & work=aux,trans=trans_)
+             & trans=trans_)
         call sm%sv%apply(cone,ww,czero,ty,desc_data,trans_,aux,wv(4:),info,init='Y')             
 
       case('U')
@@ -182,7 +182,7 @@ subroutine amg_c_as_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
         call psb_geaxpby(cone,initu,czero,ty,desc_data,info)
         if (info == 0) call sm%apply_restr(ty,trans_,aux,info)
         if (info == 0) call psb_spmm(-cone,sm%nd,ty,cone,ww,sm%desc_data,info,&
-             & work=aux,trans=trans_)
+             & trans=trans_)
         call sm%sv%apply(cone,ww,czero,ty,desc_data,trans_,aux,wv(4:),info,init='Y')             
 
       case default
@@ -206,7 +206,7 @@ subroutine amg_c_as_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
         !
         if (info == 0) call psb_geaxpby(cone,tx,czero,ww,sm%desc_data,info)
         if (info == 0) call psb_spmm(-cone,sm%nd,ty,cone,ww,sm%desc_data,info,&
-             & work=aux,trans=trans_)
+             & trans=trans_)
 
         if (info /= psb_success_) exit
 

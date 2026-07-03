@@ -116,19 +116,19 @@ subroutine amg_c_base_ainv_solver_apply_vect(alpha,sv,x,beta,y,desc_data,&
     select case(trans_)
     case('N')
       call psb_spmm(cone,sv%w,x,czero,tx,desc_data,info,&
-           & trans=trans_,work=aux,doswap=.false.)
+           & trans=trans_,doswap=.false.)
       if (info == psb_success_) call ty%mlt(cone,sv%dv,tx,czero,info)
       if (info == psb_success_) &
            & call psb_spmm(alpha,sv%z,ty,beta,y,desc_data,info,&
-           & trans=trans_,work=aux,doswap=.false.)
+           & trans=trans_,doswap=.false.)
 
     case('T','C')
       call psb_spmm(cone,sv%z,x,czero,tx,desc_data,info,&
-           & trans=trans_,work=aux,doswap=.false.)
+           & trans=trans_,doswap=.false.)
       if (info == psb_success_) call ty%mlt(cone,sv%dv,tx,czero,info)
       if (info == psb_success_) &
            & call psb_spmm(alpha,sv%w,ty,beta,y,desc_data,info,&
-           & trans=trans_,work=aux,doswap=.false.)
+           & trans=trans_,doswap=.false.)
 
     case default
       call psb_errpush(psb_err_internal_error_,name,&

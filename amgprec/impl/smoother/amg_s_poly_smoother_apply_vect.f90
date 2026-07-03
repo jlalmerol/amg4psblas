@@ -158,7 +158,7 @@ subroutine amg_s_poly_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           call psb_upd_xyz(cr,cz,sone,sone,ty,tz,tx,desc_data,info) ! zk = cz * zk-1 + cr * rk-1 
           if (do_timings) call psb_toc(poly_vect)
           if (do_timings) call psb_tic(poly_mv)
-          call psb_spmm(-sone,sm%pa,tz,sone,r,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%pa,tz,sone,r,desc_data,info,trans=trans_)
           if (do_timings) call psb_toc(poly_mv)
         end do
         if (do_timings) call psb_tic(poly_sv)
@@ -198,7 +198,7 @@ subroutine amg_s_poly_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           call psb_upd_xyz(cr,cz,sm%poly_beta(i),sone,ty,tz,tx,desc_data,info)
           if (do_timings) call psb_toc(poly_vect)
           if (do_timings) call psb_tic(poly_mv)
-          call psb_spmm(-sone,sm%pa,tz,sone,r,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%pa,tz,sone,r,desc_data,info,trans=trans_)
           if (do_timings) call psb_toc(poly_mv)
         end do
         call sm%sv%apply(sone,r,szero,ty,desc_data,trans_,aux,wv(5:),info,init='Z')
@@ -235,7 +235,7 @@ subroutine amg_s_poly_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           !
           ! r_{k-1} = r_k - (1/rho(BA)) B A d_k
           if (do_timings) call psb_tic(poly_mv)
-          call psb_spmm(sone,sm%pa,tz,szero,ty,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(sone,sm%pa,tz,szero,ty,desc_data,info,trans=trans_)
           if (do_timings) call psb_toc(poly_mv)
           if (do_timings) call psb_tic(poly_sv)
           call sm%sv%apply(-(sone/sm%rho_ba),ty,sone,r,desc_data,trans_,aux,wv(5:),info,init='Z')

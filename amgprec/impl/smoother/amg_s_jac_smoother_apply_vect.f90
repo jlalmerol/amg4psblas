@@ -140,7 +140,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
         case('Y')
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
           call psb_geaxpby(sone,y,szero,ty,desc_data,info)
-          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,trans=trans_)
           call sm%sv%apply(sone,tx,szero,ty,desc_data,trans_,aux,wv(3:),info,init='Y')
 
         case('U')
@@ -151,7 +151,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           end if
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
           call psb_geaxpby(sone,initu,szero,ty,desc_data,info)
-          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,trans=trans_)
           call sm%sv%apply(sone,tx,szero,ty,desc_data,trans_,aux,wv(3:),info,init='Y')
 
         case default
@@ -166,7 +166,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           !  where is the diagonal and  A the matrix.
           !
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
-          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%pa,ty,sone,tx,desc_data,info,trans=trans_)
 
           if (info /= psb_success_) exit
 
@@ -231,7 +231,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
         case('Y')
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
           call psb_geaxpby(sone,y,szero,ty,desc_data,info)
-          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,trans=trans_)
           call sm%sv%apply(sone,tx,szero,ty,desc_data,trans_,aux,wv(3:),info,init='Y')
 
         case('U')
@@ -242,7 +242,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           end if
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
           call psb_geaxpby(sone,initu,szero,ty,desc_data,info)
-          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,trans=trans_)
           call sm%sv%apply(sone,tx,szero,ty,desc_data,trans_,aux,wv(3:),info,init='Y')
 
         case default
@@ -258,7 +258,7 @@ subroutine amg_s_jac_smoother_apply_vect(alpha,sm,x,beta,y,desc_data,trans,&
           ! and Y(j) is the approximate solution at sweep j.
           !
           call psb_geaxpby(sone,x,szero,tx,desc_data,info)
-          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,work=aux,trans=trans_)
+          call psb_spmm(-sone,sm%nd,ty,sone,tx,desc_data,info,trans=trans_)
 
           if (info /= psb_success_) exit
 

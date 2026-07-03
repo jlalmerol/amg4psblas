@@ -139,26 +139,26 @@ subroutine amg_z_ilu_solver_apply_vect(alpha,sv,x,beta,y,desc_data,&
     select case(trans_)
     case('N')
       call psb_spsm(zone,sv%l,x,zzero,tw,desc_data,info,&
-           & trans=trans_,scale='L',diag=sv%dv,choice=psb_none_,work=aux)
+           & trans=trans_,scale='L',diag=sv%dv,choice=psb_none_)
 
       if (info == psb_success_) call psb_spsm(alpha,sv%u,tw,beta,y,desc_data,info,&
-           & trans=trans_,scale='U',choice=psb_none_, work=aux)
+           & trans=trans_,scale='U',choice=psb_none_)
 
     case('T')
       call psb_spsm(zone,sv%u,x,zzero,tw,desc_data,info,&
-           & trans=trans_,scale='L',diag=sv%dv,choice=psb_none_,work=aux)
+           & trans=trans_,scale='L',diag=sv%dv,choice=psb_none_)
       if (info == psb_success_) call psb_spsm(alpha,sv%l,tw,beta,y,desc_data,info,&
-           & trans=trans_,scale='U',choice=psb_none_,work=aux)
+           & trans=trans_,scale='U',choice=psb_none_)
 
     case('C')
 
       call psb_spsm(zone,sv%u,x,zzero,tw,desc_data,info,&
-           & trans=trans_,scale='U',choice=psb_none_,work=aux)
+           & trans=trans_,scale='U',choice=psb_none_)
 
       call tw1%mlt(zone,sv%dv,tw,zzero,info,conjgx=trans_)
 
       if (info == psb_success_) call psb_spsm(alpha,sv%l,tw1,beta,y,desc_data,info,&
-           & trans=trans_,scale='U',choice=psb_none_,work=aux)
+           & trans=trans_,scale='U',choice=psb_none_)
 
     case default
       call psb_errpush(psb_err_internal_error_,name,& 

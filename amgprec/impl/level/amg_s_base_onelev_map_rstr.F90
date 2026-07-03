@@ -76,7 +76,7 @@ subroutine amg_s_base_onelev_map_rstr_v(lv,alpha,vect_u,beta,vect_v,info,&
         call psb_geasb(tv,lv%remap_data%desc_ac_pre_remap,info) 
 !!$        write(0,*) me,' Size of TV ',tv%get_nrows()
         call lv%linmap%map_U2V(alpha,vect_u,beta,tv,info,&
-             & work=work,vtx=vtx,vty=vty)
+             & vtx=vtx,vty=vty)
         rsnd = tv%get_vect()
         call psb_snd(ctxt,rsnd(1:nrl),idest)
         if (rme >=0) then
@@ -99,7 +99,7 @@ subroutine amg_s_base_onelev_map_rstr_v(lv,alpha,vect_u,beta,vect_v,info,&
   else
     ! Default transfer
     call lv%linmap%map_U2V(alpha,vect_u,beta,vect_v,info,&
-         & work=work,vtx=vtx,vty=vty)
+             & vtx=vtx,vty=vty)
   end if
   
 end subroutine amg_s_base_onelev_map_rstr_v

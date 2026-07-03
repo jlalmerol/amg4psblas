@@ -96,7 +96,7 @@ subroutine amg_d_base_onelev_map_prol_v(lv,alpha,vect_v,beta,vect_u,info,work,vt
         call psb_rcv(ctxt,rsnd(1:nrl),idest)
         call tv%set_vect(rsnd)
         call lv%linmap%map_V2U(alpha,tv,beta,vect_u,info,&
-             & work=work,vtx=vtx,vty=vty)
+             & vtx=vtx,vty=vty)
       end associate
 !!$      write(0,*) me, ' Prolongator with remap done '
 !!$      flush(0)
@@ -105,7 +105,7 @@ subroutine amg_d_base_onelev_map_prol_v(lv,alpha,vect_v,beta,vect_u,info,work,vt
   else
     ! Default transfer
     call lv%linmap%map_V2U(alpha,vect_v,beta,vect_u,info,&
-         & work=work,vtx=vtx,vty=vty)
+             & vtx=vtx,vty=vty)
   end if
   
 end subroutine amg_d_base_onelev_map_prol_v

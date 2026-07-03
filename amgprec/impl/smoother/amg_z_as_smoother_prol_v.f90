@@ -91,7 +91,7 @@ subroutine amg_z_as_smoother_prol_v(sm,x,trans,work,info,data)
       ! 
       ! Would work anyway, but since it is supposed to do nothing ...
       !        call psb_ovrl(x,sm%desc_data,info,&
-      !             & update=sm%prol,work=work)
+      !             & update=sm%prol)
 
 
     case(psb_sum_,psb_avg_) 
@@ -99,7 +99,7 @@ subroutine amg_z_as_smoother_prol_v(sm,x,trans,work,info,data)
       ! Update the overlap of x
       !
       call psb_ovrl(x,sm%desc_data,info,&
-           & update=sm%prol,work=work)
+           & update=sm%prol)
       if(info /= psb_success_) then
         info=psb_err_from_subroutine_
         ch_err='psb_ovrl'
@@ -118,7 +118,7 @@ subroutine amg_z_as_smoother_prol_v(sm,x,trans,work,info,data)
     ! 
     if (sm%restr == psb_halo_) then 
       call psb_ovrl(x,sm%desc_data,info,&
-           & update=psb_sum_,work=work)
+           & update=psb_sum_)
       if(info /= psb_success_) then
         info=psb_err_from_subroutine_
         ch_err='psb_ovrl'
