@@ -327,18 +327,12 @@ contains
 
   subroutine get_optimal_dir(value)
     character(len=*), intent(out) :: value
-    character(len=256) :: home_dir
     integer :: status
 
     call get_environment_variable('OPTIMAL_DIR', value, status=status)
     if (status == 0 .and. len_trim(value) > 0) return
 
-    call get_environment_variable('HOME', home_dir, status=status)
-    if (status == 0 .and. len_trim(home_dir) > 0) then
-      value = trim(home_dir) // '/dealii-test/build_optimal'
-    else
-      value = '../../../../dealii-test/build_optimal'
-    end if
+    value = '../../../../dealii-test/build_optimal'
   end subroutine get_optimal_dir
 
   subroutine get_string_env(name, value, default_value)

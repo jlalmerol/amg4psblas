@@ -7,9 +7,11 @@ interface.
 
 The Stokes sample uses the AMG4PSBLAS-side block preconditioner by default
 (`STOKES_PREC=AMG_BLOCK`), with AMG on the velocity block and a Schur
-preconditioner for pressure.  The optimal-control sample uses the PSBLAS built-in diagonal
-nested composition by default (`DIAG`), which is the robust default for the
-current KKT MatrixMarket data.
+preconditioner for pressure.  `STOKES_PREC=MASS_BLOCK` instead uses the
+block-diagonal preconditioner `diag(A,Mp)`, where `Mp` is the exported pressure
+mass matrix; BJAC/ILU is applied to both diagonal blocks.  The optimal-control
+sample uses the PSBLAS built-in diagonal nested composition by default (`DIAG`),
+which is the robust default for the current KKT MatrixMarket data.
 
 The additional `amg_d_nested_block_prec_mod.F90` file provides an
 AMG4PSBLAS-side block preconditioner for comparison runs.  This keeps PSBLAS
@@ -79,6 +81,7 @@ Bt_ref<ref>.mtx
 B_ref<ref>.mtx
 rhs_u_ref<ref>.mtx
 rhs_p_ref<ref>.mtx
+Mp_ref<ref>.mtx (required by STOKES_PREC=MASS_BLOCK)
 ```
 
 
@@ -88,7 +91,7 @@ Useful environment variables:
 STOKES_DIR=/path/to/dealii-test/build
 STOKES_REF=0
 STOKES_METHOD=BICGSTAB
-STOKES_PREC=AMG_BLOCK|NEST|AMG
+STOKES_PREC=AMG_BLOCK|MASS_BLOCK|NEST|AMG
 STOKES_COMPOSITION=SCHUR_FULL
 STOKES_SCHUR_SOLVE=MATRIX_FREE|SELF|SELFP
 STOKES_SCHUR_MAXIT=10
@@ -105,14 +108,10 @@ cd samples/advanced/nested
 make all
 STOKES_DIR=$HOME/dealii-test/build \
 ./runs/amg_d_nest_stokes_file_test
-```
 
-Current status on the available `STOKES_REF=0` test data:
-
-```text
-default: STOKES_PREC=AMG_BLOCK STOKES_SCHUR_SOLVE=MATRIX_FREE iterations = 23    relative residual = 1.0235E-09
-STOKES_PREC=NEST                                             iterations = 135   relative residual = 7.1175E-09
-STOKES_PREC=AMG_BLOCK STOKES_SCHUR_SOLVE=SELF        iterations = 41    relative residual = 4.8287E-09
+# Compare with the pressure-mass block-diagonal route:
+STOKES_DIR=$HOME/dealii-test/build STOKES_PREC=MASS_BLOCK \
+./runs/amg_d_nest_stokes_file_test
 ```
 
 For `STOKES_PREC=AMG_BLOCK`, `SELF` and `SELFP` use the lumped pressure
@@ -190,13 +189,6 @@ PDE-control Schur complement on field 3:
 [ A31  A32  A33 ]
 ```
 
-Current status on the available default optimal-control data (`OPTIMAL_REF=5`,
-`OPTIMAL_DEGREE=1`):
-
-```text
-OPTIMAL_PREC=NEST OPTIMAL_COMPOSITION=DIAG iterations = 847   relative residual = 9.4861E-04
-```
-
 The run uses `BICGSTAB`, total size 3267 (`n_u=n_y=n_p=1089`),
 `OPTIMAL_EPS=1e-3`, and `OPTIMAL_CHECK_TOL=1e-2`.
 
@@ -206,6 +198,105 @@ current optimal-control matrices.  The KKT Schur term is very strongly scaled
 because `A13/A31` are order-one blocks while `A11` is a small mass-like block, so
 a diagonal/probed Schur preconditioner is too weak.  A stronger Schur
 preconditioner is still needed for this case.
+
+## Benchmark Notes
+
+### Purpose and test data
+
+These benchmarks are functional and algorithmic comparisons of the nested
+preconditioner routes.  They are intended to expose convergence behavior and
+the relative cost of the current implementations, not to establish
+machine-independent performance rankings.
+
+The Stokes benchmark uses the deal.II export at `STOKES_REF=0`.  Its block
+operator is
+
+```text
+[ A  Bt ] [u] = [f]
+[ B   0 ] [p]   [g]
+```
+
+with 594 velocity unknowns, 85 pressure unknowns, and 679 unknowns in total.
+The MatrixMarket blocks have the following dimensions and stored nonzeros:
+
+| Block | Dimensions | Nonzeros |
+|---|---:|---:|
+| `A` | 594 x 594 | 14,514 |
+| `B` | 85 x 594 | 3,078 |
+| `Bt` | 594 x 85 | 3,078 |
+| `Mp` | 85 x 85 | 637 |
+
+`Mp` is the pressure mass matrix exported from the deal.II block
+preconditioner matrix.  It is not inserted into the physical `(2,2)` block;
+for `MASS_BLOCK` it is used only in the block-diagonal preconditioner
+`diag(A,Mp)`.
+
+The optimal-control benchmark uses `OPTIMAL_REF=5` and `OPTIMAL_DEGREE=1`.
+It has three equally sized fields, `n_u=n_y=n_p=1089`, for 3,267 unknowns in
+total.
+
+### Algorithmic choices
+
+All reported runs use preconditioned BiCGSTAB through the PSBLAS Krylov
+interface.  The stopping test is based on the relative residual
+`||b-Ax||_2/||b||_2`.
+
+The Stokes comparison uses `STOKES_EPS=1e-8`, a maximum of 2,000 outer
+iterations, and an independent post-solve acceptance threshold of `1e-6`.
+The tested preconditioners are:
+
+- `AMG_BLOCK` with `MATRIX_FREE`: AMG approximates the velocity inverse.  The
+  pressure Schur action `-B A^{-1} Bt` is evaluated matrix-free and solved by
+  an inner BiCGSTAB iteration, with at most 10 inner iterations.
+- `AMG_BLOCK` with `SELF`: AMG is again used for velocity, while the pressure
+  solve uses the lumped approximation formed from `B diag(A)^{-1} Bt`.
+- `MASS_BLOCK`: the separate preconditioning operator is `diag(A,Mp)`.
+  PSBLAS nested diagonal composition applies BJAC/ILU(0) to both blocks.
+- `NEST`: the built-in PSBLAS nested Schur route uses BJAC/ILU(0) for its
+  block solves and the same matrix-free Schur controls.
+
+The optimal-control result uses `NEST`, diagonal composition, BJAC/ILU(0)
+field solves, `OPTIMAL_EPS=1e-3`, a maximum of 4,000 iterations, and an
+independent acceptance threshold of `1e-2`.
+
+### Execution setup
+
+The results below were collected on one Apple arm64 process (`np=1`) on macOS
+26.5.1, using GNU Fortran 15.2.0, Open MPI 5.0.9, PSBLAS, AMG4PSBLAS, and
+OpenBLAS.  Each row is one representative run.  `Prec time` is preconditioner
+construction time and `Solve time` is the Krylov solve time reported by the
+driver; file reading and nested-matrix assembly are excluded.  Because the
+problems are small and each configuration was run only once, timing differences
+should be treated cautiously.  Iteration counts and final residuals are the
+more useful comparison here.
+
+### Results
+
+| Problem and route | Outer iterations | Relative residual | Prec time (s) | Solve time (s) |
+|---|---:|---:|---:|---:|
+| Stokes `AMG_BLOCK`, `MATRIX_FREE` | 22 | 6.6543e-09 | 0.002422 | 0.074329 |
+| Stokes `AMG_BLOCK`, `SELF` | 40 | 4.2237e-09 | 0.004471 | 0.008340 |
+| Stokes `MASS_BLOCK` | 56 | 8.3966e-09 | 0.000901 | 0.003952 |
+| Stokes `NEST` | 137 | 5.2265e-09 | 0.001289 | 0.087068 |
+| Optimal control `NEST`, `DIAG` | 1,134 | 9.8249e-04 | 0.000143 | 0.18755 |
+
+On this Stokes case, the matrix-free AMG/Schur route requires the fewest outer
+iterations.  The pressure-mass route converges in 56 iterations and is a useful
+spectrally motivated block-diagonal baseline.  Its lower time in this single
+small run should not be interpreted as a scalability result: the matrix-free
+route performs nested iterative work per outer iteration, while `MASS_BLOCK`
+uses local ILU(0) block applications.  Refinement studies and repeated MPI runs
+are needed to assess mesh independence and parallel performance.
+
+To reproduce the two principal Stokes comparisons:
+
+```sh
+STOKES_PREC=AMG_BLOCK STOKES_SCHUR_SOLVE=MATRIX_FREE \
+./runs/amg_d_nest_stokes_file_test
+
+STOKES_PREC=MASS_BLOCK \
+./runs/amg_d_nest_stokes_file_test
+```
 
 ## Build
 

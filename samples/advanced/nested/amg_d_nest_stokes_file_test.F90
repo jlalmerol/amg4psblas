@@ -8,6 +8,7 @@
 ! Expected input files in STOKES_DIR, for refinement STOKES_REF:
 !   A_ref<ref>.mtx, Bt_ref<ref>.mtx, B_ref<ref>.mtx
 !   rhs_u_ref<ref>.mtx, rhs_p_ref<ref>.mtx
+! For STOKES_PREC=MASS_BLOCK, also Mp_ref<ref>.mtx.
 !
 program amg_d_nest_stokes_file_test
   use psb_base_mod
@@ -33,10 +34,11 @@ program amg_d_nest_stokes_file_test
 
   type(psb_ctxt_type)     :: context
   type(psb_d_nest_matrix) :: nested_matrix
+  type(psb_d_nest_matrix) :: mass_prec_matrix
   class(psb_dprec_type), allocatable :: preconditioner
   type(psb_d_vect_type)   :: rhs, x_solution, residual
 
-  type(mm_matrix) :: a_block, bt_block, b_block
+  type(mm_matrix) :: a_block, bt_block, b_block, mp_block
   type(mm_vector) :: rhs_u, rhs_p
 
   integer(psb_ipk_) :: my_rank, num_procs, info
@@ -51,6 +53,7 @@ program amg_d_nest_stokes_file_test
   character(len=256) :: input_dir, method, ptype, ref_text, composition, schur_solve
   character(len=512) :: filename
   integer :: refinement, schur_maxit
+  logical :: use_pressure_mass
 
   call psb_init(context)
   call psb_info(context, my_rank, num_procs)
@@ -58,6 +61,8 @@ program amg_d_nest_stokes_file_test
   call get_string_env('STOKES_DIR', input_dir, '../../../../dealii-test/build')
   call get_string_env('STOKES_METHOD', method, 'BICGSTAB')
   call get_string_env('STOKES_PREC', ptype, 'AMG_BLOCK')
+  use_pressure_mass = (psb_toupper(trim(ptype)) == 'MASS_BLOCK') .or. &
+       & (psb_toupper(trim(ptype)) == 'PRESSURE_MASS')
   call get_string_env('STOKES_COMPOSITION', composition, 'SCHUR_FULL')
   call get_string_env('STOKES_SCHUR_SOLVE', schur_solve, 'MATRIX_FREE')
   call get_int_env('STOKES_REF', refinement, 0)
@@ -76,6 +81,7 @@ program amg_d_nest_stokes_file_test
     write(*,'(a,a)') '  refinement: ', trim(ref_text)
     write(*,'(a,a)') '  method    : ', trim(method)
     write(*,'(a,a)') '  prec      : ', trim(ptype)
+    if (use_pressure_mass) write(*,'(a)') '  pressure block: Mp (pressure mass matrix)'
     write(*,'(a,a)') '  composition: ', trim(composition)
     write(*,'(a,a)') '  schur solve: ', trim(schur_solve)
     write(*,'(a,i0)') '  schur maxit: ', schur_maxit
@@ -87,6 +93,9 @@ program amg_d_nest_stokes_file_test
   call read_mm_matrix(path_join(input_dir, 'A_ref'  // trim(ref_text) // '.mtx'), a_block)
   call read_mm_matrix(path_join(input_dir, 'Bt_ref' // trim(ref_text) // '.mtx'), bt_block)
   call read_mm_matrix(path_join(input_dir, 'B_ref'  // trim(ref_text) // '.mtx'), b_block)
+  if (use_pressure_mass) then
+    call read_mm_matrix(path_join(input_dir, 'Mp_ref' // trim(ref_text) // '.mtx'), mp_block)
+  end if
   call read_mm_vector(path_join(input_dir, 'rhs_u_ref' // trim(ref_text) // '.mtx'), rhs_u)
   call read_mm_vector(path_join(input_dir, 'rhs_p_ref' // trim(ref_text) // '.mtx'), rhs_p)
   t_read = psb_wtime() - t0
@@ -100,6 +109,12 @@ program amg_d_nest_stokes_file_test
       (rhs_u%n /= n_u) .or. (rhs_p%n /= n_p)) then
     if (my_rank == 0) write(*,*) 'FAIL: inconsistent Stokes block dimensions'
     call psb_abort(context)
+  end if
+  if (use_pressure_mass) then
+    if ((mp_block%nrow /= n_p) .or. (mp_block%ncol /= n_p)) then
+      if (my_rank == 0) write(*,*) 'FAIL: pressure mass matrix has inconsistent dimensions'
+      call psb_abort(context)
+    end if
   end if
 
   t0 = psb_wtime()
@@ -123,6 +138,21 @@ program amg_d_nest_stokes_file_test
 
   call nested_matrix%asb(info)
   call check_info(info, 'nested_matrix%asb')
+
+  if (use_pressure_mass) then
+    call mass_prec_matrix%init(context, [n_u, n_p], info)
+    call check_info(info, 'mass_prec_matrix%init')
+    call select_owned_entries(a_block, mass_prec_matrix%get_owned_rows(1), rows, cols, vals, n_insert)
+    call mass_prec_matrix%ins(1, 1, n_insert, rows, cols, vals, info)
+    call check_info(info, 'insert preconditioner A')
+    call clear_triplets(rows, cols, vals)
+    call select_owned_entries(mp_block, mass_prec_matrix%get_owned_rows(2), rows, cols, vals, n_insert)
+    call mass_prec_matrix%ins(2, 2, n_insert, rows, cols, vals, info)
+    call check_info(info, 'insert pressure mass matrix')
+    call clear_triplets(rows, cols, vals)
+    call mass_prec_matrix%asb(info)
+    call check_info(info, 'mass_prec_matrix%asb')
+  end if
   t_assemble = psb_wtime() - t0
 
   call psb_geall(rhs, nested_matrix%desc_glob, info)
@@ -143,14 +173,20 @@ program amg_d_nest_stokes_file_test
   call check_info(info, 'prec%init')
   select case (psb_toupper(trim(ptype)))
   case ('NEST')
-    call preconditioner%set('COMPOSITION', trim(composition), info)
+    if (use_pressure_mass) then
+      call preconditioner%set('COMPOSITION', 'DIAG', info)
+    else
+      call preconditioner%set('COMPOSITION', trim(composition), info)
+    end if
     call check_info(info, 'prec%set(COMPOSITION)')
-    call preconditioner%set('SCHUR_SOLVE', trim(schur_solve), info)
-    call check_info(info, 'prec%set(SCHUR_SOLVE)')
-    call preconditioner%set('SCHUR_MAXIT', schur_maxit, info)
-    call check_info(info, 'prec%set(SCHUR_MAXIT)')
-    call preconditioner%set('SCHUR_TOL', schur_tol, info)
-    call check_info(info, 'prec%set(SCHUR_TOL)')
+    if (.not. use_pressure_mass) then
+      call preconditioner%set('SCHUR_SOLVE', trim(schur_solve), info)
+      call check_info(info, 'prec%set(SCHUR_SOLVE)')
+      call preconditioner%set('SCHUR_MAXIT', schur_maxit, info)
+      call check_info(info, 'prec%set(SCHUR_MAXIT)')
+      call preconditioner%set('SCHUR_TOL', schur_tol, info)
+      call check_info(info, 'prec%set(SCHUR_TOL)')
+    end if
     call preconditioner%set('BLOCK_SOLVE', 'BJAC', info)
     call check_info(info, 'prec%set(BLOCK_SOLVE)')
     call preconditioner%set('SUB_SOLVE', 'ILU', info)
@@ -165,7 +201,11 @@ program amg_d_nest_stokes_file_test
     call preconditioner%set('SCHUR_TOL', schur_tol, info)
     call check_info(info, 'prec%set(SCHUR_TOL)')
   end select
-  call preconditioner%build(nested_matrix%a_glob, nested_matrix%desc_glob, info)
+  if (use_pressure_mass) then
+    call preconditioner%build(mass_prec_matrix%a_glob, mass_prec_matrix%desc_glob, info)
+  else
+    call preconditioner%build(nested_matrix%a_glob, nested_matrix%desc_glob, info)
+  end if
   call check_info(info, 'prec%build')
   t_prec = psb_wtime() - t0
 
@@ -212,6 +252,7 @@ program amg_d_nest_stokes_file_test
   call psb_gefree(residual, nested_matrix%desc_glob, info)
   call psb_gefree(x_solution, nested_matrix%desc_glob, info)
   call psb_gefree(rhs, nested_matrix%desc_glob, info)
+  if (use_pressure_mass) call mass_prec_matrix%free(info)
   call nested_matrix%free(info)
   call psb_exit(context)
 
@@ -219,6 +260,10 @@ contains
 
   subroutine allocate_preconditioner()
     select case (psb_toupper(trim(ptype)))
+    case ('MASS_BLOCK','PRESSURE_MASS')
+      allocate(psb_dprec_type :: preconditioner, stat=info)
+      call check_info(info, 'allocate pressure-mass preconditioner')
+      ptype = 'NEST'
     case ('AMG_BLOCK','AMG_SCHUR','SCHUR_AMG')
       allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate AMG block preconditioner')
