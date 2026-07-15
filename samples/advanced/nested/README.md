@@ -117,6 +117,8 @@ STOKES_DIR=$HOME/dealii-test/build STOKES_PREC=MASS_BLOCK \
 For `STOKES_PREC=AMG_BLOCK`, `SELF` and `SELFP` use the lumped pressure
 Schur diagonal built from `B diag(A)^{-1} Bt`; `MATRIX_FREE` keeps the
 existing inner Schur iteration using AMG applications on the velocity block.
+For `STOKES_PREC=NEST`, `SELF` and `SELFP` are aliases for the PSBLAS-built
+approximate Schur matrix and its internal block preconditioner.
 
 
 ### Optimal-Control File Test
@@ -254,15 +256,26 @@ The tested preconditioners are:
   PSBLAS nested diagonal composition applies BJAC/ILU(0) to both blocks.
 - `NEST`: the built-in PSBLAS nested Schur route uses BJAC/ILU(0) for its
   block solves and the same matrix-free Schur controls.
+- `NEST` with `SELF` or `SELFP`: PSBLAS explicitly assembles the approximate
+  Schur matrix from the nested blocks and builds a separate BJAC/ILU(0)
+  preconditioner for it.  `SELF` and `SELFP` select the same implementation.
 
-The optimal-control result uses `NEST`, diagonal composition, BJAC/ILU(0)
-field solves, `OPTIMAL_EPS=1e-3`, a maximum of 4,000 iterations, and an
-independent acceptance threshold of `1e-2`.
+The optimal-control comparison uses `NEST`, `OPTIMAL_EPS=1e-3`, a maximum of
+4,000 outer iterations, and an independent acceptance threshold of `1e-2`.
+The two configurations are:
+
+- `DIAG`: independent diagonal field solves.  With the `MASS_DIAG` profile,
+  fields 1 and 2 use diagonal approximations to their mass-like blocks and
+  field 3 uses the `NONE` fallback.
+- `SCHUR_PDE_CONTROL`: fields 1 and 2 again use the `MASS_DIAG` profile, while
+  field 3 is treated through the matrix-free PDE-control Schur action.  The
+  Schur solve uses at most 200 inner CG iterations.  No separate field-3 block
+  or inner solver is enabled.
 
 ### Execution setup
 
-The results below were collected on one Apple arm64 process (`np=1`) on macOS
-26.5.1, using GNU Fortran 15.2.0, Open MPI 5.0.9, PSBLAS, AMG4PSBLAS, and
+The main results below were collected on one Apple arm64 process (`np=1`) on
+macOS 26.5.1, using GNU Fortran 15.2.0, Open MPI 5.0.9, PSBLAS, AMG4PSBLAS, and
 OpenBLAS.  Each row is one representative run.  `Prec time` is preconditioner
 construction time and `Solve time` is the Krylov solve time reported by the
 driver; file reading and nested-matrix assembly are excluded.  Because the
@@ -270,25 +283,29 @@ problems are small and each configuration was run only once, timing differences
 should be treated cautiously.  Iteration counts and final residuals are the
 more useful comparison here.
 
-### Results
+### Stokes benchmark report
 
-| Problem and route | Outer iterations | Relative residual | Prec time (s) | Solve time (s) |
+| Route | Outer iterations | Relative residual | Prec time (s) | Solve time (s) |
 |---|---:|---:|---:|---:|
-| Stokes `AMG_BLOCK`, `MATRIX_FREE` | 22 | 6.6543e-09 | 0.002422 | 0.074329 |
-| Stokes `AMG_BLOCK`, `SELF` | 40 | 4.2237e-09 | 0.004471 | 0.008340 |
-| Stokes `MASS_BLOCK` | 56 | 8.3966e-09 | 0.000901 | 0.003952 |
-| Stokes `NEST` | 137 | 5.2265e-09 | 0.001289 | 0.087068 |
-| Optimal control `NEST`, `DIAG` | 1,134 | 9.8249e-04 | 0.000143 | 0.18755 |
+| `AMG_BLOCK`, `MATRIX_FREE` | 22 | 6.6543e-09 | 0.002422 | 0.074329 |
+| `AMG_BLOCK`, `SELF` | 40 | 4.2237e-09 | 0.004471 | 0.008340 |
+| `MASS_BLOCK` | 56 | 8.3966e-09 | 0.000901 | 0.003952 |
+| `NEST`, `MATRIX_FREE` | 137 | 5.2265e-09 | 0.001289 | 0.087068 |
+| `NEST`, `SELF/SELFP` | 40 | 8.3981e-09 | 0.001154 | 0.004906 |
 
 On this Stokes case, the matrix-free AMG/Schur route requires the fewest outer
 iterations.  The pressure-mass route converges in 56 iterations and is a useful
 spectrally motivated block-diagonal baseline.  Its lower time in this single
 small run should not be interpreted as a scalability result: the matrix-free
 route performs nested iterative work per outer iteration, while `MASS_BLOCK`
-uses local ILU(0) block applications.  Refinement studies and repeated MPI runs
-are needed to assess mesh independence and parallel performance.
+uses local ILU(0) block applications.
 
-To reproduce the two principal Stokes comparisons:
+The direct PSBLAS `NEST + SELF/SELFP` route was also checked after moving the
+internally assembled Schur matrix and block preconditioner into each nested
+preconditioner instance and replaying the configured Schur options before its
+build.
+
+To reproduce the principal Stokes benchmark routes:
 
 ```sh
 STOKES_PREC=AMG_BLOCK STOKES_SCHUR_SOLVE=MATRIX_FREE \
@@ -296,6 +313,69 @@ STOKES_PREC=AMG_BLOCK STOKES_SCHUR_SOLVE=MATRIX_FREE \
 
 STOKES_PREC=MASS_BLOCK \
 ./runs/amg_d_nest_stokes_file_test
+
+STOKES_PREC=NEST STOKES_SCHUR_SOLVE=SELFP \
+./runs/amg_d_nest_stokes_file_test
+```
+
+### Optimal-control benchmark report
+
+All rows use one process, the refinement-5 degree-1 matrices
+(`n_u=n_y=n_p=1089`), `OPTIMAL_PROFILE=MASS_DIAG`, and the stopping controls
+described above.  The first two rows use `BICGSTAB`; the third uses `MINRES`
+with the symmetric diagonal nested preconditioner.
+
+| Krylov method | Route | Schur inner limit | Outer iterations | Solver error | Relative residual | Prec time (s) | Solve time (s) | Result |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| `BICGSTAB` | `NEST`, `DIAG` | -- | 1,134 | 9.8249e-04 | 9.8249e-04 | 0.000143 | 0.18755 | PASS |
+| `BICGSTAB` | `NEST`, `SCHUR_PDE_CONTROL`, `MATRIX_FREE` | 200 | 260 | 7.7616e-04 | 7.7616e-04 | 0.000046 | 4.3951 | PASS |
+| `MINRES` | `NEST`, `DIAG` | -- | 705 | 9.9964e-04 | 9.0928e-04 | 0.000400 | 0.060146 | PASS |
+
+The PDE-control Schur configuration reduces the outer iteration count from
+1,134 to 260.  Its solve time is higher for this small case because every outer
+preconditioner application can perform up to 200 matrix-free inner Schur
+iterations; the iteration reduction therefore does not imply a reduction in
+wall-clock time.
+
+With the diagonal nested preconditioner, `MINRES` reduces the iteration count
+from 1,134 to 705 and the representative solve time from 0.18755 s to
+0.060146 s.  The reported MINRES solver estimate (`9.9964e-04`) differs from
+the independently computed true relative residual (`9.0928e-04`); both satisfy
+their configured thresholds.
+
+To reproduce the three optimal-control rows:
+
+```sh
+OPTIMAL_PREC=NEST \
+OPTIMAL_COMPOSITION=DIAG \
+OPTIMAL_PROFILE=MASS_DIAG \
+OPTIMAL_EPS=1e-3 \
+OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
+
+OPTIMAL_PREC=NEST \
+OPTIMAL_COMPOSITION=SCHUR_PDE_CONTROL \
+OPTIMAL_PROFILE=MASS_DIAG \
+OPTIMAL_MASS_INNER_SOLVE=NONE \
+OPTIMAL_FIELD3_BLOCK_SOLVE=NONE \
+OPTIMAL_FIELD3_INNER_SOLVE=NONE \
+OPTIMAL_SCHUR_SOLVE=MATRIX_FREE \
+OPTIMAL_SCHUR_MAXIT=200 \
+OPTIMAL_SCHUR_TOL=0 \
+OPTIMAL_EPS=1e-3 \
+OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
+
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=NEST \
+OPTIMAL_COMPOSITION=DIAG \
+OPTIMAL_PROFILE=MASS_DIAG \
+OPTIMAL_MASS_INNER_SOLVE=NONE \
+OPTIMAL_FIELD3_BLOCK_SOLVE=NONE \
+OPTIMAL_FIELD3_INNER_SOLVE=NONE \
+OPTIMAL_EPS=1e-3 \
+OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
 ```
 
 ## Build
