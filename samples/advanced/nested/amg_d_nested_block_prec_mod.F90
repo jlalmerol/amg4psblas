@@ -1,9 +1,11 @@
 module amg_d_nested_block_prec_mod
-  use psb_base_mod, only : psb_ipk_, psb_epk_, psb_dpk_, psb_success_, &
+  use psb_base_mod, only : psb_ipk_, psb_lpk_, psb_epk_, psb_dpk_, psb_success_, &
        & psb_err_invalid_input_, psb_err_invalid_mat_state_, psb_err_alloc_dealloc_, &
-       & psb_errpush, psb_toupper, psb_geall, psb_geasb, psb_gefree, done, dzero, psb_ctxt_type
+       & psb_errpush, psb_toupper, psb_geall, psb_geasb, psb_gefree, &
+       & psb_spall, psb_spins, psb_spasb, psb_dupl_add_, &
+       & done, dzero, psb_ctxt_type
   use psb_prec_mod, only : psb_dprec_type
-  use psb_d_mat_mod, only : psb_dspmat_type, psb_d_get_diag
+  use psb_d_mat_mod, only : psb_dspmat_type, psb_d_get_diag, psb_d_csgetrow
   use psb_d_vect_mod, only : psb_d_vect_type
   use psb_desc_mod, only : psb_desc_type
   use psb_d_base_mat_mod, only : psb_d_base_sparse_mat
@@ -24,8 +26,13 @@ module amg_d_nested_block_prec_mod
     integer(psb_ipk_) :: nfields = 0
     type(psb_d_nest_base_mat), pointer :: nest_op => null()
     type(amg_dprec_type), allocatable :: field_amg(:)
+    type(amg_dprec_type) :: schur_amg
+    type(psb_dspmat_type) :: shifted_mat
     logical, allocatable :: use_amg(:)
+    logical :: schur_amg_built = .false.
     real(psb_dpk_), allocatable :: schur_diag(:)
+    real(psb_dpk_), allocatable :: mass_diag1(:), mass_diag2(:)
+    real(psb_dpk_), allocatable :: schur_active(:)
     character(len=16) :: schur_solve = 'MATRIX_FREE'
     integer(psb_ipk_) :: schur_maxit = 8
     real(psb_dpk_) :: schur_tol = dzero
@@ -64,6 +71,8 @@ contains
       prec%mode = 'STOKES'
     case ('AMG_KKT','KKT','OPTIMAL','OPTIMAL_CONTROL')
       prec%mode = 'KKT'
+    case ('AMG_KKT_DIAG','KKT_DIAG','KKT_BLOCK_DIAG','OPTIMAL_DIAG')
+      prec%mode = 'KKT_DIAG'
     case default
       prec%mode = 'AUTO'
     end select
@@ -185,7 +194,7 @@ contains
         call psb_errpush(info, 'amg_nested_block_build', a_err='missing field descriptor')
         return
       end if
-      if (i < prec%nfields) then
+      if ((i < prec%nfields) .and. (trim(prec%mode) /= 'KKT_DIAG')) then
         call prec%field_amg(i)%init(fdesc%get_ctxt(), 'ML', info)
         if (info /= psb_success_) return
         call prec%field_amg(i)%build(blk, fdesc, info, amold=amold, vmold=vmold, imold=imold)
@@ -199,6 +208,8 @@ contains
       call amg_d_build_stokes_schur_diag(prec, info)
     case ('KKT')
       call amg_d_build_kkt_schur_diag(prec, info)
+    case ('KKT_DIAG')
+      call amg_d_build_kkt_dominant_schur(prec, info, amold, vmold, imold)
     case default
       info = psb_err_invalid_input_
       call psb_errpush(info, 'amg_nested_block_build', a_err='unknown mode')
@@ -501,6 +512,198 @@ contains
       end do
     end if
   end subroutine amg_d_build_kkt_schur_diag
+
+  ! Build the AMG approximation used by the shifted SPD Schur block
+  !
+  !   S_alpha = H M^{-1} H,       S_alpha^{-1} = H^{-1} M H^{-1},
+  !   H = K + alpha^{-1/2} M.
+  !
+  ! For the PDE-control ordering used by this sample, K=A13, M=A11, and
+  ! A22=alpha*M.  The shift also regularizes retained Dirichlet rows for which
+  ! the exported stiffness block has a zero diagonal.
+  subroutine amg_d_build_kkt_dominant_schur(prec, info, amold, vmold, imold)
+    class(amg_d_nested_block_prec_type), intent(inout) :: prec
+    integer(psb_ipk_), intent(out) :: info
+    class(psb_d_base_sparse_mat), intent(in), optional :: amold
+    class(psb_d_base_vect_type), intent(in), optional :: vmold
+    class(psb_i_base_vect_type), intent(in), optional :: imold
+    type(psb_dspmat_type), pointer :: stiffness, mass, alpha_mass
+    type(psb_desc_type), pointer :: desc1, desc3
+    real(psb_dpk_), allocatable :: dmass(:), dalpha_mass(:), dstiffness(:)
+    real(psb_dpk_) :: alpha_control, shift
+
+    info = psb_success_
+    desc1 => psb_d_nest_get_field_desc(prec%nest_op, 1)
+    desc3 => psb_d_nest_get_field_desc(prec%nest_op, 3)
+    stiffness => psb_d_nest_get_block(prec%nest_op, 1, 3)
+    mass => psb_d_nest_get_block(prec%nest_op, 1, 1)
+    alpha_mass => psb_d_nest_get_block(prec%nest_op, 2, 2)
+    if ((.not. associated(desc1)) .or. (.not. associated(desc3)) .or. &
+         & (.not. associated(stiffness)) .or. (.not. associated(mass)) .or. &
+         & (.not. associated(alpha_mass))) then
+      info = psb_err_invalid_mat_state_
+      call psb_errpush(info, 'amg_nested_kkt_diag_build', &
+           & a_err='requires A11, A13, A22 and field descriptors')
+      return
+    end if
+    if (desc1%get_local_cols() /= desc3%get_local_cols()) then
+      info = psb_err_invalid_input_
+      call psb_errpush(info, 'amg_nested_kkt_diag_build', &
+           & a_err='dominant Schur prototype requires matching fields')
+      return
+    end if
+
+    dmass = psb_d_get_diag(mass, info)
+    if (info /= psb_success_) return
+    dalpha_mass = psb_d_get_diag(alpha_mass, info)
+    if (info /= psb_success_) return
+    if ((sum(abs(dmass)) <= tiny(done)) .or. &
+         & (sum(abs(dalpha_mass)) <= tiny(done))) then
+      info = psb_err_invalid_mat_state_
+      call psb_errpush(info, 'amg_nested_kkt_diag_build', &
+           & a_err='cannot infer positive control regularization')
+      return
+    end if
+    alpha_control = sum(abs(dalpha_mass)) / sum(abs(dmass))
+    shift = done / sqrt(alpha_control)
+
+    dstiffness = psb_d_get_diag(stiffness, info)
+    if (info /= psb_success_) return
+    if (allocated(prec%schur_active)) deallocate(prec%schur_active)
+    allocate(prec%schur_active(size(dstiffness)), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+    prec%schur_active(:) = merge(done, dzero, &
+         & abs(dstiffness(:)) > sqrt(tiny(done)))
+    dstiffness(:) = dstiffness(:) + shift * dmass(:)
+    if (minval(abs(dstiffness)) <= tiny(done)) then
+      info = psb_err_invalid_mat_state_
+      call psb_errpush(info, 'amg_nested_kkt_diag_build', &
+           & a_err='shifted stiffness has a zero diagonal')
+      return
+    end if
+
+    ! Assemble the shifted operator as an ordinary distributed square PSBLAS
+    ! matrix before passing it to AMG.  AMG cannot build directly from the
+    ! local storage used for a nested off-diagonal block.
+    call amg_d_assemble_shifted_matrix(prec, stiffness, mass, desc1, shift, info)
+    if (info /= psb_success_) return
+
+    call prec%schur_amg%init(desc1%get_ctxt(), 'ML', info)
+    if (info /= psb_success_) return
+    call prec%schur_amg%set('SMOOTHER_TYPE', 'JACOBI', info)
+    if (info /= psb_success_) return
+    call prec%schur_amg%set('COARSE_SOLVE', 'BJAC', info)
+    if (info /= psb_success_) return
+    call prec%schur_amg%build(prec%shifted_mat, desc1, info, amold=amold, &
+         & vmold=vmold, imold=imold)
+    if (info /= psb_success_) return
+    prec%schur_amg_built = .true.
+
+    ! Retain the diagonal for diagnostics and a possible Jacobi fallback.
+    if (allocated(prec%schur_diag)) deallocate(prec%schur_diag)
+    allocate(prec%schur_diag(size(dstiffness)), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+    prec%schur_diag(:) = abs(dstiffness(:))
+    if (allocated(prec%mass_diag1)) deallocate(prec%mass_diag1)
+    if (allocated(prec%mass_diag2)) deallocate(prec%mass_diag2)
+    allocate(prec%mass_diag1(size(dmass)), &
+         & prec%mass_diag2(size(dalpha_mass)), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+    prec%mass_diag1(:) = abs(dmass(:))
+    prec%mass_diag2(:) = abs(dalpha_mass(:))
+  end subroutine amg_d_build_kkt_dominant_schur
+
+  subroutine amg_d_assemble_shifted_matrix(prec, stiffness, mass, desc, &
+       & shift, info)
+    class(amg_d_nested_block_prec_type), intent(inout) :: prec
+    type(psb_dspmat_type), intent(in) :: stiffness, mass
+    type(psb_desc_type), intent(inout) :: desc
+    real(psb_dpk_), intent(in) :: shift
+    integer(psb_ipk_), intent(out) :: info
+    integer(psb_ipk_), allocatable :: ia(:), ja(:)
+    integer(psb_lpk_), allocatable :: gia(:), gja(:)
+    real(psb_dpk_), allocatable :: val(:)
+    integer(psb_ipk_) :: nz, k, nrows
+
+    info = psb_success_
+    nrows = desc%get_local_rows()
+    call psb_spall(prec%shifted_mat, desc, info, &
+         & nnz=stiffness%get_nzeros()+mass%get_nzeros())
+    if (info /= psb_success_) return
+
+    call psb_d_csgetrow(1, nrows, stiffness, nz, ia, ja, val, info)
+    if (info /= psb_success_) return
+    allocate(gia(nz), gja(nz), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+    do k = 1, nz
+      call desc%l2g(ia(k), gia(k), info)
+      if (info /= psb_success_) return
+      call desc%l2g(ja(k), gja(k), info)
+      if (info /= psb_success_) return
+      val(k) = val(k) * prec%schur_active(ia(k)) * &
+           & prec%schur_active(ja(k))
+    end do
+    call psb_spins(nz, gia, gja, val, prec%shifted_mat, desc, info)
+    if (info /= psb_success_) return
+    deallocate(ia, ja, gia, gja, val)
+
+    call psb_d_csgetrow(1, nrows, mass, nz, ia, ja, val, info)
+    if (info /= psb_success_) return
+    allocate(gia(nz), gja(nz), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+    do k = 1, nz
+      call desc%l2g(ia(k), gia(k), info)
+      if (info /= psb_success_) return
+      call desc%l2g(ja(k), gja(k), info)
+      if (info /= psb_success_) return
+      val(k) = shift * val(k)
+    end do
+    call psb_spins(nz, gia, gja, val, prec%shifted_mat, desc, info)
+    if (info /= psb_success_) return
+    call psb_spasb(prec%shifted_mat, desc, info, dupl=psb_dupl_add_)
+    deallocate(ia, ja, gia, gja, val)
+  end subroutine amg_d_assemble_shifted_matrix
+
+  subroutine amg_d_apply_shifted_amg(prec, rhs, sol, desc, info)
+    class(amg_d_nested_block_prec_type), intent(inout) :: prec
+    real(psb_dpk_), intent(in) :: rhs(:)
+    real(psb_dpk_), intent(out) :: sol(:)
+    type(psb_desc_type), intent(in) :: desc
+    integer(psb_ipk_), intent(out) :: info
+    type(psb_d_vect_type) :: xv, yv
+    integer(psb_ipk_) :: nloc, linfo
+
+    info = psb_success_
+    nloc = desc%get_local_cols()
+    call psb_geall(xv, desc, info)
+    if (info == psb_success_) call psb_geall(yv, desc, info)
+    if (info == psb_success_) call psb_geasb(xv, desc, info)
+    if (info == psb_success_) call psb_geasb(yv, desc, info)
+    if (info == psb_success_) call xv%zero()
+    if (info == psb_success_) call yv%zero()
+    if (info == psb_success_) call xv%set(rhs(1:min(size(rhs), nloc)))
+    if (info == psb_success_) &
+         & call prec%schur_amg%apply(xv, yv, desc, info, trans='N')
+    if (info == psb_success_) sol(:) = yv%get_vect(size(sol))
+    call psb_gefree(xv, desc, linfo)
+    call psb_gefree(yv, desc, linfo)
+  end subroutine amg_d_apply_shifted_amg
+
   subroutine amg_d_nested_block_apply2v(prec, x, y, desc_data, info, trans, work)
     class(amg_d_nested_block_prec_type), intent(inout) :: prec
     type(psb_desc_type), intent(in) :: desc_data
@@ -515,6 +718,8 @@ contains
       call amg_d_apply_stokes(prec, x, y, desc_data, info)
     case ('KKT')
       call amg_d_apply_kkt(prec, x, y, desc_data, info)
+    case ('KKT_DIAG')
+      call amg_d_apply_kkt_block_diag(prec, x, y, desc_data, info)
     case default
       info = psb_err_invalid_input_
       call psb_errpush(info, 'amg_nested_block_apply', a_err='unknown mode')
@@ -612,6 +817,79 @@ contains
     deallocate(r1, r2, r3, z1, z2, z3, t3, c1, c2)
   end subroutine amg_d_apply_kkt
 
+  ! Apply diag(M^{-1}, (alpha M)^{-1}, S_alpha^{-1}) with
+  ! S_alpha^{-1}=H^{-1} M H^{-1}.  There are no triangular coupling corrections,
+  ! so this is the symmetric block-diagonal form intended for MINRES.
+  subroutine amg_d_apply_kkt_block_diag(prec, x, y, desc_data, info)
+    class(amg_d_nested_block_prec_type), intent(inout) :: prec
+    real(psb_dpk_), intent(inout) :: x(:), y(:)
+    type(psb_desc_type), intent(in) :: desc_data
+    integer(psb_ipk_), intent(out) :: info
+    type(psb_desc_type), pointer :: d1, d2, d3
+    real(psb_dpk_), allocatable :: r1(:), r2(:), r3(:), z1(:), z2(:), &
+         & z3(:), ktmp(:), mtmp(:)
+    integer(psb_ipk_) :: n1, n2, n3
+
+    info = psb_success_
+    d1 => psb_d_nest_get_field_desc(prec%nest_op, 1)
+    d2 => psb_d_nest_get_field_desc(prec%nest_op, 2)
+    d3 => psb_d_nest_get_field_desc(prec%nest_op, 3)
+    if ((.not. associated(d1)) .or. (.not. associated(d2)) .or. &
+         & (.not. associated(d3)) .or. (.not. allocated(prec%schur_diag)) .or. &
+         & (.not. allocated(prec%mass_diag1)) .or. &
+         & (.not. allocated(prec%mass_diag2)) .or. &
+         & (.not. allocated(prec%schur_active)) .or. &
+         & (.not. prec%schur_amg_built)) then
+      info = psb_err_invalid_mat_state_
+      call psb_errpush(info, 'amg_nested_kkt_diag_apply', &
+           & a_err='block-diagonal Schur preconditioner not built')
+      return
+    end if
+    n1 = d1%get_local_cols()
+    n2 = d2%get_local_cols()
+    n3 = d3%get_local_cols()
+    if ((n1 /= n3) .or. (n2 /= n3)) then
+      info = psb_err_invalid_input_
+      return
+    end if
+    allocate(r1(n1), r2(n2), r3(n3), z1(n1), z2(n2), z3(n3), &
+         & ktmp(n3), mtmp(n1), stat=info)
+    if (info /= 0) then
+      info = psb_err_alloc_dealloc_
+      return
+    end if
+
+    y(:) = dzero
+    r1(:) = dzero; r2(:) = dzero; r3(:) = dzero
+    z1(:) = dzero; z2(:) = dzero; z3(:) = dzero
+    ktmp(:) = dzero; mtmp(:) = dzero
+    call psb_d_nest_restrict_field(prec%nest_op, 1, x, r1, info)
+    if (info /= psb_success_) goto 100
+    call psb_d_nest_restrict_field(prec%nest_op, 2, x, r2, info)
+    if (info /= psb_success_) goto 100
+    call psb_d_nest_restrict_field(prec%nest_op, 3, x, r3, info)
+    if (info /= psb_success_) goto 100
+
+    z1(:) = r1(:) / max(prec%mass_diag1(:), sqrt(tiny(done)))
+    z2(:) = r2(:) / max(prec%mass_diag2(:), sqrt(tiny(done)))
+    call amg_d_apply_shifted_amg(prec, r3, ktmp, d1, info)
+    if (info /= psb_success_) goto 100
+    call psb_d_nest_apply_block(prec%nest_op, 1, 1, done, ktmp, &
+         & dzero, mtmp, info)
+    if (info /= psb_success_) goto 100
+    call amg_d_apply_shifted_amg(prec, mtmp, z3, d1, info)
+    if (info /= psb_success_) goto 100
+
+    call psb_d_nest_prolong_field(prec%nest_op, 1, z1, y, info)
+    if (info /= psb_success_) goto 100
+    call psb_d_nest_prolong_field(prec%nest_op, 2, z2, y, info)
+    if (info /= psb_success_) goto 100
+    call psb_d_nest_prolong_field(prec%nest_op, 3, z3, y, info)
+
+100 continue
+    deallocate(r1, r2, r3, z1, z2, z3, ktmp, mtmp)
+  end subroutine amg_d_apply_kkt_block_diag
+
   subroutine amg_d_nested_block_apply1v(prec, x, desc_data, info, trans)
     class(amg_d_nested_block_prec_type), intent(inout) :: prec
     type(psb_desc_type), intent(in) :: desc_data
@@ -681,7 +959,16 @@ contains
       deallocate(prec%field_amg)
     end if
     if (allocated(prec%use_amg)) deallocate(prec%use_amg)
+    if (prec%schur_amg_built) then
+      call prec%schur_amg%free(linfo)
+      if (linfo /= psb_success_ .and. info == psb_success_) info = linfo
+    end if
+    prec%schur_amg_built = .false.
+    call prec%shifted_mat%free()
     if (allocated(prec%schur_diag)) deallocate(prec%schur_diag)
+    if (allocated(prec%mass_diag1)) deallocate(prec%mass_diag1)
+    if (allocated(prec%mass_diag2)) deallocate(prec%mass_diag2)
+    if (allocated(prec%schur_active)) deallocate(prec%schur_active)
     prec%schur_solve = 'MATRIX_FREE'
     prec%schur_maxit = 8
     prec%schur_tol = dzero

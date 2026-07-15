@@ -239,6 +239,10 @@ contains
 
   subroutine allocate_preconditioner()
     select case (psb_toupper(trim(ptype)))
+    case ('AMG_KKT_DIAG','KKT_DIAG','KKT_BLOCK_DIAG','OPTIMAL_DIAG')
+      allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
+      call check_info(info, 'allocate AMG KKT block-diagonal preconditioner')
+      ptype = 'AMG_KKT_DIAG'
     case ('AMG_BLOCK','AMG_KKT','KKT_AMG')
       allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate AMG KKT preconditioner')

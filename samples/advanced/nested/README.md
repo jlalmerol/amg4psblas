@@ -159,8 +159,8 @@ OPTIMAL_DIR=/path/to/dealii-test/build_optimal
 OPTIMAL_REF=5
 OPTIMAL_DEGREE=1
 OPTIMAL_METHOD=BICGSTAB
-OPTIMAL_PREC=NEST|AMG_BLOCK|AMG
-OPTIMAL_COMPOSITION=DIAG|SCHUR_PDE_CONTROL
+OPTIMAL_PREC=NEST|AMG_BLOCK|AMG_KKT_DIAG|AMG
+OPTIMAL_COMPOSITION=DIAG|SCHUR_PDE_CONTROL|SCHUR_PDE_CONTROL_DIAG
 OPTIMAL_SCHUR_SOLVE=MATRIX_FREE|A33
 OPTIMAL_SCHUR_MAXIT=12
 OPTIMAL_SCHUR_TOL=0
@@ -189,6 +189,46 @@ PDE-control Schur complement on field 3:
 [ A11   0   A13 ]       grouped diagonal block: diag(A11,A22)
 [  0   A22  A23 ]       Schur field: field 3
 [ A31  A32  A33 ]
+```
+
+`OPTIMAL_COMPOSITION=SCHUR_PDE_CONTROL_DIAG` applies the structurally
+symmetric block-diagonal form `diag(B1,B2,BS)`.  It omits the lower and upper
+coupling corrections used by `SCHUR_PDE_CONTROL`.  For MINRES, all three
+solves must additionally be fixed symmetric positive-definite operators.
+`OPTIMAL_SCHUR_SOLVE=A33` satisfies that requirement with the current
+`A33=0`/`NONE` identity fallback.  The current `MATRIX_FREE` Schur option uses
+an inner CG iteration and is not a fixed linear preconditioner, so it should
+not be combined with strict MINRES.
+
+`OPTIMAL_PREC=AMG_KKT_DIAG` selects the sample-level prototype of the shifted
+SPD approximation from equation (17).  It applies
+
+```text
+diag(M^{-1}, (alpha M)^{-1}, H^{-1} M H^{-1}),
+H = K + alpha^{-1/2} M.
+```
+
+The exported matrices retain constrained boundary unknowns, making `A13`
+nonsymmetric by itself (`A31=A13^T`).  The prototype projects the stiffness
+action onto the unconstrained degrees of freedom before adding the mass shift.
+The two mass inverses use fixed diagonal actions.  The prototype assembles
+`H` as an ordinary distributed square PSBLAS matrix and builds one reusable
+AMG hierarchy for it; the same fixed AMG action is used for both `H^{-1}`
+factors.  Jacobi smoothing and a fixed block-Jacobi coarse solve keep the
+complete block preconditioner suitable for MINRES.
+
+For example, the currently available fixed-SPD configuration is:
+
+```sh
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=NEST \
+OPTIMAL_COMPOSITION=SCHUR_PDE_CONTROL_DIAG \
+OPTIMAL_SCHUR_SOLVE=A33 \
+OPTIMAL_PROFILE=MASS_DIAG \
+OPTIMAL_MASS_INNER_SOLVE=NONE \
+OPTIMAL_FIELD3_BLOCK_SOLVE=NONE \
+OPTIMAL_FIELD3_INNER_SOLVE=NONE \
+./runs/amg_d_nest_optimal_control_test
 ```
 
 The run uses `BICGSTAB`, total size 3267 (`n_u=n_y=n_p=1089`),
@@ -322,14 +362,16 @@ STOKES_PREC=NEST STOKES_SCHUR_SOLVE=SELFP \
 
 All rows use one process, the refinement-5 degree-1 matrices
 (`n_u=n_y=n_p=1089`), `OPTIMAL_PROFILE=MASS_DIAG`, and the stopping controls
-described above.  The first two rows use `BICGSTAB`; the third uses `MINRES`
-with the symmetric diagonal nested preconditioner.
+described above.  The first two rows use `BICGSTAB`; the remaining three use `MINRES`
+with structurally symmetric diagonal nested preconditioners.
 
 | Krylov method | Route | Schur inner limit | Outer iterations | Solver error | Relative residual | Prec time (s) | Solve time (s) | Result |
 |---|---|---:|---:|---:|---:|---:|---:|---|
 | `BICGSTAB` | `NEST`, `DIAG` | -- | 1,134 | 9.8249e-04 | 9.8249e-04 | 0.000143 | 0.18755 | PASS |
 | `BICGSTAB` | `NEST`, `SCHUR_PDE_CONTROL`, `MATRIX_FREE` | 200 | 260 | 7.7616e-04 | 7.7616e-04 | 0.000046 | 4.3951 | PASS |
 | `MINRES` | `NEST`, `DIAG` | -- | 705 | 9.9964e-04 | 9.0928e-04 | 0.000400 | 0.060146 | PASS |
+| `MINRES` | `NEST`, `SCHUR_PDE_CONTROL_DIAG`, `A33` | -- | 705 | 9.9964e-04 | 9.0928e-04 | 0.000675 | 0.074232 | PASS |
+| `MINRES` | `AMG_KKT_DIAG`, shifted SPD/AMG | -- | 9,323 | 1.9986e-05 | 3.2862e-03 | 0.001416 | 1.1856 | PASS |
 
 The PDE-control Schur configuration reduces the outer iteration count from
 1,134 to 260.  Its solve time is higher for this small case because every outer
@@ -343,7 +385,21 @@ from 1,134 to 705 and the representative solve time from 0.18755 s to
 the independently computed true relative residual (`9.0928e-04`); both satisfy
 their configured thresholds.
 
-To reproduce the three optimal-control rows:
+The new `SCHUR_PDE_CONTROL_DIAG + A33` route also converges in 705 MINRES
+iterations.  Here `A33=0`, so the configured `NONE` field-3 block provides the
+fixed identity fallback.  The measured read and assembly times for this run
+were 0.028390 s and 0.006892 s, respectively.  Its identical iteration count
+and residual confirm that, with this fallback, it has the same mathematical
+action as the existing diagonal baseline while exercising the new
+block-diagonal Schur composition.
+
+The shifted SPD/AMG prototype needs a tighter MINRES estimate (`OPTIMAL_EPS=2e-5`)
+to meet the independently checked residual threshold.  It validates the new
+operator, the reusable AMG hierarchy, and MINRES compatibility.  It is faster
+than the earlier Jacobi-factor prototype but is not yet competitive with the
+simpler diagonal baseline in outer iterations or total solve time.
+
+To reproduce the five optimal-control rows:
 
 ```sh
 OPTIMAL_PREC=NEST \
@@ -375,6 +431,23 @@ OPTIMAL_FIELD3_BLOCK_SOLVE=NONE \
 OPTIMAL_FIELD3_INNER_SOLVE=NONE \
 OPTIMAL_EPS=1e-3 \
 OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
+
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=NEST \
+OPTIMAL_COMPOSITION=SCHUR_PDE_CONTROL_DIAG \
+OPTIMAL_SCHUR_SOLVE=A33 \
+OPTIMAL_PROFILE=MASS_DIAG \
+OPTIMAL_MASS_INNER_SOLVE=NONE \
+OPTIMAL_FIELD3_BLOCK_SOLVE=NONE \
+OPTIMAL_FIELD3_INNER_SOLVE=NONE \
+./runs/amg_d_nest_optimal_control_test
+
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=AMG_KKT_DIAG \
+OPTIMAL_EPS=2e-5 \
+OPTIMAL_CHECK_TOL=1e-2 \
+OPTIMAL_ITMAX=10000 \
 ./runs/amg_d_nest_optimal_control_test
 ```
 
