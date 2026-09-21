@@ -21,7 +21,7 @@ message(STATUS "PSBLAS DIRECTORY INC ${INCDIR}; MOD ${MODDIR}; LIB ${LIBDIR};")
 
 
 # Find the psblas package
-find_package(psblas REQUIRED MODULE)
+find_package(psblas REQUIRED CONFIG)
 
 if(NOT psblas_FOUND)
     message(FATAL_ERROR "PSBLAS not found!")

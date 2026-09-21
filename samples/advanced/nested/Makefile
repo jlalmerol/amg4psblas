@@ -38,3 +38,5 @@ lib:
 
 verycleanlib:
 	(cd ../../..; make veryclean)
+
+amg_d_nest_stokes_file_test.o amg_d_nest_optimal_control_test.o: amg_d_nested_block_prec_mod.o

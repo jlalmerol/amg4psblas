@@ -33,8 +33,8 @@ program amg_d_nest_stokes_file_test
   end type mm_vector
 
   type(psb_ctxt_type)     :: context
-  type(psb_d_nest_matrix) :: nested_matrix
-  type(psb_d_nest_matrix) :: mass_prec_matrix
+  type(psb_d_nest_matrix), target :: nested_matrix
+  type(psb_d_nest_matrix), target :: mass_prec_matrix
   class(psb_dprec_type), allocatable :: preconditioner
   type(psb_d_vect_type)   :: rhs, x_solution, residual
 
@@ -52,7 +52,7 @@ program amg_d_nest_stokes_file_test
   real(psb_dpk_) :: t0, t_read, t_assemble, t_prec, t_solve
   character(len=256) :: input_dir, method, ptype, ref_text, composition, schur_solve
   character(len=512) :: filename
-  integer :: refinement, schur_maxit
+  integer :: refinement, schur_maxit, k
   logical :: use_pressure_mass
 
   call psb_init(context)
@@ -62,7 +62,13 @@ program amg_d_nest_stokes_file_test
   call get_string_env('STOKES_METHOD', method, 'BICGSTAB')
   call get_string_env('STOKES_PREC', ptype, 'AMG_BLOCK')
   use_pressure_mass = (psb_toupper(trim(ptype)) == 'MASS_BLOCK') .or. &
-       & (psb_toupper(trim(ptype)) == 'PRESSURE_MASS')
+       & (psb_toupper(trim(ptype)) == 'PRESSURE_MASS') .or. &
+       & (psb_toupper(trim(ptype)) == 'AMG_MASS_BLOCK')
+  if ((psb_toupper(trim(ptype)) == 'AMG_MASS_BLOCK') .and. (num_procs /= 1)) then
+    if (my_rank == 0) write(*,'(a)') 'FAIL: AMG_MASS_BLOCK currently requires one MPI process'
+    call psb_abort(context)
+  end if
+
   call get_string_env('STOKES_COMPOSITION', composition, 'SCHUR_FULL')
   call get_string_env('STOKES_SCHUR_SOLVE', schur_solve, 'MATRIX_FREE')
   call get_int_env('STOKES_REF', refinement, 0)
@@ -146,6 +152,14 @@ program amg_d_nest_stokes_file_test
     call mass_prec_matrix%ins(1, 1, n_insert, rows, cols, vals, info)
     call check_info(info, 'insert preconditioner A')
     call clear_triplets(rows, cols, vals)
+    call select_owned_entries(bt_block, mass_prec_matrix%get_owned_rows(1), rows, cols, vals, n_insert)
+    call mass_prec_matrix%ins(1, 2, n_insert, rows, cols, vals, info)
+    call check_info(info, 'insert preconditioner Bt')
+    call clear_triplets(rows, cols, vals)
+    call select_owned_entries(b_block, mass_prec_matrix%get_owned_rows(2), rows, cols, vals, n_insert)
+    call mass_prec_matrix%ins(2, 1, n_insert, rows, cols, vals, info)
+    call check_info(info, 'insert preconditioner B')
+    call clear_triplets(rows, cols, vals)
     call select_owned_entries(mp_block, mass_prec_matrix%get_owned_rows(2), rows, cols, vals, n_insert)
     call mass_prec_matrix%ins(2, 2, n_insert, rows, cols, vals, info)
     call check_info(info, 'insert pressure mass matrix')
@@ -175,8 +189,10 @@ program amg_d_nest_stokes_file_test
   case ('NEST')
     if (use_pressure_mass) then
       call preconditioner%set('COMPOSITION', 'DIAG', info)
+      call check_info(info, 'preconditioner%set')
     else
       call preconditioner%set('COMPOSITION', trim(composition), info)
+      call check_info(info, 'preconditioner%set')
     end if
     call check_info(info, 'prec%set(COMPOSITION)')
     if (.not. use_pressure_mass) then
@@ -201,12 +217,65 @@ program amg_d_nest_stokes_file_test
     call preconditioner%set('SCHUR_TOL', schur_tol, info)
     call check_info(info, 'prec%set(SCHUR_TOL)')
   end select
-  if (use_pressure_mass) then
+  if (my_rank == 0) then
+    write(*,'(a)') '  resolved operator composition:'
+    write(*,'(a)') '    row 1: [A, Bt]'
+    write(*,'(a)') '    row 2: [B,  0]'
+    write(*,'(a,a)') '  resolved preconditioner: ', trim(ptype)
+    select case (psb_toupper(trim(ptype)))
+    case ('NEST')
+      if (use_pressure_mass) then
+        write(*,'(a)') '    composition: DIAG'
+      else
+        write(*,'(a,a)') '    composition: ', trim(composition)
+      end if
+      write(*,'(a)') '    block 1 (velocity, A): BJAC / ILU(0)'
+      if (use_pressure_mass) then
+        write(*,'(a)') '    block 2 (pressure, Mp): BJAC / ILU(0)'
+      else
+        write(*,'(a)') '    block 2 (pressure, A22=0): NONE; handled by Schur solve'
+        write(*,'(a,a,a,i0,a,es12.4)') '      Schur: ', trim(schur_solve), &
+             & ', maxit=', schur_maxit, ', tol=', schur_tol
+      end if
+    case ('AMG_STOKES')
+      write(*,'(a)') '    composition: Stokes block factorization'
+      write(*,'(a)') '    block 1 (velocity, A): AMG (ML)'
+      write(*,'(a,a,a,i0,a,es12.4)') '    block 2 (pressure): Schur ', trim(schur_solve), &
+           & ', maxit=', schur_maxit, ', tol=', schur_tol
+    case ('AMG_STOKES_MASS')
+      write(*,'(a)') '    composition: DIAG (equation 21)'
+      write(*,'(a)') '    block 1 (velocity, A): fixed AMG (ML)'
+      write(*,'(a)') '    block 2 (pressure, Mp): lumped diagonal inverse'
+    case ('ML')
+      write(*,'(a)') '    all blocks: global AMG (ML)'
+    end select
+  end if
+  if (use_pressure_mass .and. (psb_toupper(trim(ptype)) /= 'AMG_STOKES_MASS')) then
     call preconditioner%build(mass_prec_matrix%a_glob, mass_prec_matrix%desc_glob, info)
+    call check_info(info, 'preconditioner%build')
   else
     call preconditioner%build(nested_matrix%a_glob, nested_matrix%desc_glob, info)
+    call check_info(info, 'preconditioner%build')
   end if
   call check_info(info, 'prec%build')
+  if (psb_toupper(trim(ptype)) == 'AMG_STOKES_MASS') then
+    select type (amg_prec => preconditioner)
+    type is (amg_d_nested_block_prec_type)
+      if (size(amg_prec%schur_diag) /= n_p) then
+        if (my_rank == 0) write(*,'(a)') 'FAIL: pressure diagonal size mismatch'
+        call psb_abort(context)
+      end if
+      amg_prec%schur_diag(:) = dzero
+      do k = 1, mp_block%nnz
+        if (mp_block%row(k) == mp_block%col(k)) &
+             & amg_prec%schur_diag(mp_block%row(k)) = mp_block%val(k)
+      end do
+      if (any(amg_prec%schur_diag <= dzero)) then
+        if (my_rank == 0) write(*,'(a)') 'FAIL: pressure mass diagonal must be positive'
+        call psb_abort(context)
+      end if
+    end select
+  end if
   t_prec = psb_wtime() - t0
 
   t0 = psb_wtime()
@@ -217,14 +286,19 @@ program amg_d_nest_stokes_file_test
   t_solve = psb_wtime() - t0
 
   call psb_geall(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geall')
   call psb_geasb(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geasb')
   call psb_geaxpby(done, rhs, dzero, residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geaxpby')
   call psb_spmm(-done, nested_matrix%a_glob, x_solution, done, residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_spmm')
   residual_norm = psb_genrm2(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'norm')
   rhs_norm      = psb_genrm2(rhs,      nested_matrix%desc_glob, info)
-  if ((residual_norm /= residual_norm) .or. (rhs_norm /= rhs_norm) .or. &
-      & (residual_norm / max(rhs_norm, tiny(done)) > residual_tol)) then
-    if (my_rank == 0) write(*,'(a)') '[FAIL] amg_d_nest_stokes_file_test: residual above STOKES_RESIDUAL_TOL or NaN'
+  call check_info(info, 'norm')
+  if (residual_norm / max(rhs_norm, tiny(done)) > residual_tol) then
+    if (my_rank == 0) write(*,'(a)') '[FAIL] amg_d_nest_stokes_file_test: residual above STOKES_RESIDUAL_TOL'
     call psb_abort(context)
   end if
 
@@ -250,10 +324,14 @@ program amg_d_nest_stokes_file_test
 9999 continue
   if (allocated(preconditioner)) call preconditioner%free(info)
   call psb_gefree(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   call psb_gefree(x_solution, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   call psb_gefree(rhs, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   if (use_pressure_mass) call mass_prec_matrix%free(info)
   call nested_matrix%free(info)
+  call check_info(info, 'nested_matrix%free')
   call psb_exit(context)
 
 contains
@@ -272,6 +350,10 @@ contains
       allocate(amg_dprec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate AMG preconditioner')
       ptype = 'ML'
+    case ('AMG_MASS_BLOCK')
+      allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
+      call check_info(info, 'allocate AMG pressure-mass block preconditioner')
+      ptype = 'AMG_STOKES_MASS'
     case default
       allocate(psb_dprec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate PSBLAS preconditioner')
@@ -349,16 +431,20 @@ contains
       stop 2
     end if
     read(unit,'(a)') header
+    if (trim(psb_toupper(header)) /= '%%MATRIXMARKET MATRIX COORDINATE REAL GENERAL') then
+      write(*,*) '[FAIL] unsupported MatrixMarket matrix format: ', trim(header)
+      call psb_abort(context)
+    end if
     do
       read(unit,'(a)', iostat=ios) line
-      if (ios /= 0) stop 'Unexpected end of MatrixMarket header'
+      if (ios /= 0) error stop 'Unexpected end of MatrixMarket header'
       if (line(1:1) /= '%') exit
     end do
     read(line,*) mat%nrow, mat%ncol, mat%nnz
     allocate(mat%row(mat%nnz), mat%col(mat%nnz), mat%val(mat%nnz))
     do i = 1_psb_lpk_, mat%nnz
       read(unit,*,iostat=ios) mat%row(i), mat%col(i), mat%val(i)
-      if (ios /= 0) stop 'Bad MatrixMarket coordinate row'
+      if (ios /= 0) error stop 'Bad MatrixMarket coordinate row'
     end do
     close(unit)
   end subroutine read_mm_matrix
@@ -376,16 +462,21 @@ contains
       stop 2
     end if
     read(unit,'(a)') header
+    if (trim(psb_toupper(header)) /= '%%MATRIXMARKET MATRIX ARRAY REAL GENERAL') then
+      write(*,*) '[FAIL] unsupported MatrixMarket vector format: ', trim(header)
+      call psb_abort(context)
+    end if
     do
       read(unit,'(a)', iostat=ios) line
-      if (ios /= 0) stop 'Unexpected end of MatrixMarket vector header'
+      if (ios /= 0) error stop 'Unexpected end of MatrixMarket vector header'
       if (line(1:1) /= '%') exit
     end do
     read(line,*) vec%n, ncol
+    if (ncol /= 1) call psb_abort(context)
     allocate(vec%val(vec%n))
     do i = 1_psb_lpk_, vec%n
       read(unit,*,iostat=ios) vec%val(i)
-      if (ios /= 0) stop 'Bad MatrixMarket vector row'
+      if (ios /= 0) error stop 'Bad MatrixMarket vector row'
     end do
     close(unit)
   end subroutine read_mm_vector

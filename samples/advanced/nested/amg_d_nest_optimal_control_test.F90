@@ -32,7 +32,7 @@ program amg_d_nest_optimal_control_test
   end type mm_vector
 
   type(psb_ctxt_type)     :: context
-  type(psb_d_nest_matrix) :: nested_matrix
+  type(psb_d_nest_matrix), target :: nested_matrix
   class(psb_dprec_type), allocatable :: preconditioner
   type(psb_d_vect_type)   :: rhs, x_solution, residual
 
@@ -185,6 +185,54 @@ program amg_d_nest_optimal_control_test
       call check_info(info, 'prec%set(SUB_FILLIN)')
     end select
   end if
+  if (my_rank == 0) then
+    write(*,'(a)') '  resolved operator composition:'
+    write(*,'(a)') '    row 1: [A11,   0, A13]'
+    write(*,'(a)') '    row 2: [  0, A22, A23]'
+    write(*,'(a)') '    row 3: [A31, A32, A33]'
+    write(*,'(a,a)') '  resolved preconditioner: ', trim(ptype)
+    select case (psb_toupper(trim(ptype)))
+    case ('NEST')
+      write(*,'(a,a)') '    composition: ', trim(composition)
+      select case (psb_toupper(trim(optimal_profile)))
+      case ('MASS_DIAG','POISSON_CONTROL','OPTIMAL_CONTROL','OPTIMAL')
+        write(*,'(a,a)') '    block 1 (A11): DIAG; inner=', trim(mass_inner_solve)
+        if (psb_toupper(trim(mass_inner_solve)) /= 'NONE') &
+             & write(*,'(a,i0,a,es12.4)') '      maxit=', mass_inner_maxit, ', tol=', inner_tol
+        write(*,'(a,a)') '    block 2 (A22): DIAG; inner=', trim(mass_inner_solve)
+        if (psb_toupper(trim(mass_inner_solve)) /= 'NONE') &
+             & write(*,'(a,i0,a,es12.4)') '      maxit=', mass_inner_maxit, ', tol=', inner_tol
+        write(*,'(a,a,a,a)') '    block 3 (A33): ', trim(field3_block_solve), &
+             & '; inner=', trim(field3_inner_solve)
+        if (psb_toupper(trim(field3_block_solve)) == 'BJAC') &
+             & write(*,'(a,a,a,i0)') '      subsolve=', trim(sub_solve), ', fillin=', sub_fillin
+        if (psb_toupper(trim(field3_inner_solve)) /= 'NONE') &
+             & write(*,'(a,i0,a,es12.4)') '      maxit=', field3_inner_maxit, ', tol=', inner_tol
+      case default
+        write(*,'(a,a)') '    blocks 1-3: ', trim(block_solve)
+        if (psb_toupper(trim(block_solve)) == 'BJAC') &
+             & write(*,'(a,a,a,i0)') '      subsolve=', trim(sub_solve), ', fillin=', sub_fillin
+      end select
+      if (index(psb_toupper(trim(composition)), 'SCHUR') == 1) &
+           & write(*,'(a,a,a,i0,a,es12.4)') '    Schur: ', trim(schur_solve), &
+           & ', maxit=', schur_maxit, ', tol=', schur_tol
+    case ('AMG_KKT')
+      write(*,'(a)') '    composition: KKT block factorization'
+      write(*,'(a)') '    blocks 1 and 2: AMG (ML)'
+      write(*,'(a,a)') '    block 3: KKT Schur solve ', trim(schur_solve)
+    case ('AMG_KKT_DIAG')
+      write(*,'(a)') '    composition: KKT block diagonal'
+      write(*,'(a)') '    blocks 1 and 2: inverse mass diagonals'
+      write(*,'(a)') '    block 3: AMG (ML) on dominant Schur approximation'
+    case ('MGW_EXACT')
+      write(*,'(a)') '    composition: exact Murphy-Golub-Wathen block diagonal'
+      write(*,'(a)') '    block 1: exact Cholesky solve with A11=M'
+      write(*,'(a)') '    block 2: exact Cholesky solve with A22=alpha*M'
+      write(*,'(a)') '    block 3: exact Cholesky solve with the dense Schur complement'
+    case ('ML')
+      write(*,'(a)') '    all blocks: global AMG (ML)'
+    end select
+  end if
   call preconditioner%build(nested_matrix%a_glob, nested_matrix%desc_glob, info)
   call check_info(info, 'prec%build')
   t_prec = psb_wtime() - t0
@@ -197,12 +245,17 @@ program amg_d_nest_optimal_control_test
   t_solve = psb_wtime() - t0
 
   call psb_geall(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geall')
   call psb_geasb(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geasb')
   call psb_geaxpby(done, rhs, dzero, residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_geaxpby')
   call psb_spmm(-done, nested_matrix%a_glob, x_solution, done, residual, nested_matrix%desc_glob, info)
   call check_info(info, 'residual spmm')
   residual_norm = psb_genrm2(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'norm')
   rhs_norm      = psb_genrm2(rhs,      nested_matrix%desc_glob, info)
+  call check_info(info, 'norm')
 
   allocate(x_global(n_total))
   call psb_gather(x_global, x_solution, nested_matrix%desc_glob, info, root=psb_root_)
@@ -219,9 +272,8 @@ program amg_d_nest_optimal_control_test
     write(*,'(a,es12.4)') '  ||b-Ax||_2 / ||b||_2=', residual_norm / max(rhs_norm, tiny(done))
     write(*,'(a,es12.4,a,es12.4,a,es12.4,a,es12.4)') &
          & '  times read=', t_read, ' assemble=', t_assemble, ' prec=', t_prec, ' solve=', t_solve
-    if ((residual_norm /= residual_norm) .or. (rhs_norm /= rhs_norm) .or. &
-        & (residual_norm / max(rhs_norm, tiny(done)) > check_tol)) then
-      write(*,'(a)') '[FAIL] amg_d_nest_optimal_control_test: residual above OPTIMAL_CHECK_TOL or NaN'
+    if (residual_norm / max(rhs_norm, tiny(done)) > check_tol) then
+      write(*,'(a)') '[FAIL] amg_d_nest_optimal_control_test: residual above OPTIMAL_CHECK_TOL'
       call psb_abort(context)
     end if
     write(*,'(a)') '[PASS] amg_d_nest_optimal_control_test'
@@ -230,9 +282,13 @@ program amg_d_nest_optimal_control_test
 9999 continue
   if (allocated(preconditioner)) call preconditioner%free(info)
   call psb_gefree(residual, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   call psb_gefree(x_solution, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   call psb_gefree(rhs, nested_matrix%desc_glob, info)
+  call check_info(info, 'psb_gefree')
   call nested_matrix%free(info)
+  call check_info(info, 'nested_matrix%free')
   call psb_exit(context)
 
 contains
@@ -243,6 +299,10 @@ contains
       allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate AMG KKT block-diagonal preconditioner')
       ptype = 'AMG_KKT_DIAG'
+    case ('MGW_EXACT')
+      allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
+      call check_info(info, 'allocate exact MGW preconditioner')
+      ptype = 'MGW_EXACT'
     case ('AMG_BLOCK','AMG_KKT','KKT_AMG')
       allocate(amg_d_nested_block_prec_type :: preconditioner, stat=info)
       call check_info(info, 'allocate AMG KKT preconditioner')
@@ -388,16 +448,20 @@ contains
       stop 2
     end if
     read(unit,'(a)') header
+    if (trim(psb_toupper(header)) /= '%%MATRIXMARKET MATRIX COORDINATE REAL GENERAL') then
+      write(*,*) '[FAIL] unsupported MatrixMarket matrix format: ', trim(header)
+      call psb_abort(context)
+    end if
     do
       read(unit,'(a)', iostat=ios) line
-      if (ios /= 0) stop 'Unexpected end of MatrixMarket header'
+      if (ios /= 0) error stop 'Unexpected end of MatrixMarket header'
       if (line(1:1) /= '%') exit
     end do
     read(line,*) mat%nrow, mat%ncol, mat%nnz
     allocate(mat%row(mat%nnz), mat%col(mat%nnz), mat%val(mat%nnz))
     do i = 1_psb_lpk_, mat%nnz
       read(unit,*,iostat=ios) mat%row(i), mat%col(i), mat%val(i)
-      if (ios /= 0) stop 'Bad MatrixMarket coordinate row'
+      if (ios /= 0) error stop 'Bad MatrixMarket coordinate row'
     end do
     close(unit)
   end subroutine read_mm_matrix
@@ -415,16 +479,21 @@ contains
       stop 2
     end if
     read(unit,'(a)') header
+    if (trim(psb_toupper(header)) /= '%%MATRIXMARKET MATRIX ARRAY REAL GENERAL') then
+      write(*,*) '[FAIL] unsupported MatrixMarket vector format: ', trim(header)
+      call psb_abort(context)
+    end if
     do
       read(unit,'(a)', iostat=ios) line
-      if (ios /= 0) stop 'Unexpected end of MatrixMarket vector header'
+      if (ios /= 0) error stop 'Unexpected end of MatrixMarket vector header'
       if (line(1:1) /= '%') exit
     end do
     read(line,*) vec%n, ncol
+    if (ncol /= 1) call psb_abort(context)
     allocate(vec%val(vec%n))
     do i = 1_psb_lpk_, vec%n
       read(unit,*,iostat=ios) vec%val(i)
-      if (ios /= 0) stop 'Bad MatrixMarket vector row'
+      if (ios /= 0) error stop 'Bad MatrixMarket vector row'
     end do
     close(unit)
   end subroutine read_mm_vector

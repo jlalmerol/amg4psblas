@@ -9,7 +9,9 @@ The Stokes sample uses the AMG4PSBLAS-side block preconditioner by default
 (`STOKES_PREC=AMG_BLOCK`), with AMG on the velocity block and a Schur
 preconditioner for pressure.  `STOKES_PREC=MASS_BLOCK` instead uses the
 block-diagonal preconditioner `diag(A,Mp)`, where `Mp` is the exported pressure
-mass matrix; BJAC/ILU is applied to both diagonal blocks.  The optimal-control
+mass matrix; BJAC/ILU is applied to both diagonal blocks.
+`STOKES_PREC=AMG_MASS_BLOCK` implements equation (21) with a fixed symmetric
+AMG cycle for `A` and the lumped diagonal inverse of `Mp`. The optimal-control
 sample uses the PSBLAS built-in diagonal nested composition by default (`DIAG`),
 which is the robust default for the current KKT MatrixMarket data.
 
@@ -24,6 +26,7 @@ selected field blocks.
 sample drivers with:
 
 - `STOKES_PREC=AMG_BLOCK`, `AMG_SCHUR`, or `SCHUR_AMG`
+- `STOKES_PREC=AMG_MASS_BLOCK` for the equation-(21) block-diagonal route
 - `OPTIMAL_PREC=AMG_BLOCK`, `AMG_KKT`, or `KKT_AMG`
 
 The preconditioner supports two explicit block structures:
@@ -81,7 +84,7 @@ Bt_ref<ref>.mtx
 B_ref<ref>.mtx
 rhs_u_ref<ref>.mtx
 rhs_p_ref<ref>.mtx
-Mp_ref<ref>.mtx (required by STOKES_PREC=MASS_BLOCK)
+Mp_ref<ref>.mtx (required by STOKES_PREC=MASS_BLOCK or AMG_MASS_BLOCK)
 ```
 
 
@@ -91,7 +94,7 @@ Useful environment variables:
 STOKES_DIR=/path/to/dealii-test/build
 STOKES_REF=0
 STOKES_METHOD=BICGSTAB
-STOKES_PREC=AMG_BLOCK|MASS_BLOCK|NEST|AMG
+STOKES_PREC=AMG_BLOCK|AMG_MASS_BLOCK|MASS_BLOCK|NEST|AMG
 STOKES_COMPOSITION=SCHUR_FULL
 STOKES_SCHUR_SOLVE=MATRIX_FREE|SELF|SELFP
 STOKES_SCHUR_MAXIT=10
@@ -112,6 +115,12 @@ STOKES_DIR=$HOME/dealii-test/build \
 # Compare with the pressure-mass block-diagonal route:
 STOKES_DIR=$HOME/dealii-test/build STOKES_PREC=MASS_BLOCK \
 ./runs/amg_d_nest_stokes_file_test
+```
+
+```sh
+# Equation (21): fixed AMG velocity solve and lumped pressure mass with MINRES:
+STOKES_DIR=$HOME/dealii-test/build STOKES_METHOD=MINRES \
+STOKES_PREC=AMG_MASS_BLOCK ./runs/amg_d_nest_stokes_file_test
 ```
 
 For `STOKES_PREC=AMG_BLOCK`, `SELF` and `SELFP` use the lumped pressure
@@ -159,7 +168,7 @@ OPTIMAL_DIR=/path/to/dealii-test/build_optimal
 OPTIMAL_REF=5
 OPTIMAL_DEGREE=1
 OPTIMAL_METHOD=BICGSTAB
-OPTIMAL_PREC=NEST|AMG_BLOCK|AMG_KKT_DIAG|AMG
+OPTIMAL_PREC=NEST|AMG_BLOCK|AMG_KKT_DIAG|MGW_EXACT|AMG
 OPTIMAL_COMPOSITION=DIAG|SCHUR_PDE_CONTROL|SCHUR_PDE_CONTROL_DIAG
 OPTIMAL_SCHUR_SOLVE=MATRIX_FREE|A33
 OPTIMAL_SCHUR_MAXIT=12
@@ -211,11 +220,41 @@ H = K + alpha^{-1/2} M.
 The exported matrices retain constrained boundary unknowns, making `A13`
 nonsymmetric by itself (`A31=A13^T`).  The prototype projects the stiffness
 action onto the unconstrained degrees of freedom before adding the mass shift.
-The two mass inverses use fixed diagonal actions.  The prototype assembles
+The two mass inverses use fixed diagonal actions. The prototype assembles
 `H` as an ordinary distributed square PSBLAS matrix and builds one reusable
 AMG hierarchy for it; the same fixed AMG action is used for both `H^{-1}`
-factors.  Jacobi smoothing and a fixed block-Jacobi coarse solve keep the
+factors. Jacobi smoothing and a fixed block-Jacobi coarse solve keep the
 complete block preconditioner suitable for MINRES.
+
+`OPTIMAL_PREC=MGW_EXACT` selects a serial reference implementation of the
+ideal Murphy--Golub--Wathen block-diagonal preconditioner:
+
+```text
+P_MGW = diag(A11, A22, S),
+S = A31 A11^{-1} A13 + A32 A22^{-1} A23 - A33.
+```
+
+For the distributed-control matrices, `A11=M`, `A22=alpha*M`, and
+`A33=0`, so this is the exact Schur complement
+`S=K M^{-1} K + alpha^{-1} M`. The route converts the blocks to dense
+matrices, factors `A11`, `A22`, and `S` with LAPACK Cholesky, and applies
+three fixed exact solves. It is intended to verify the ideal three-eigenvalue
+MINRES result; it is deliberately rejected when more than one MPI process is
+used and is not a scalable production preconditioner.
+
+Run the exact reference case with:
+
+```sh
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=MGW_EXACT \
+OPTIMAL_EPS=1e-3 \
+OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
+```
+
+At tighter tolerances, floating-point roundoff can require more than three
+iterations even though the exact-arithmetic preconditioned operator has only
+three distinct eigenvalues.
 
 For example, the currently available fixed-SPD configuration is:
 
@@ -231,7 +270,7 @@ OPTIMAL_FIELD3_INNER_SOLVE=NONE \
 ./runs/amg_d_nest_optimal_control_test
 ```
 
-The run uses `BICGSTAB`, total size 3267 (`n_u=n_y=n_p=1089`),
+The run uses `MINRES`, total size 3267 (`n_u=n_y=n_p=1089`),
 `OPTIMAL_EPS=1e-3`, and `OPTIMAL_CHECK_TOL=1e-2`.
 
 The `OPTIMAL_PREC=AMG_BLOCK` path is implemented and exercises AMG field solves
@@ -279,8 +318,8 @@ total.
 
 ### Algorithmic choices
 
-All reported runs use preconditioned BiCGSTAB through the PSBLAS Krylov
-interface.  The stopping test is based on the relative residual
+The original benchmark rows use preconditioned BiCGSTAB unless stated
+otherwise. The stopping test is based on the relative residual
 `||b-Ax||_2/||b||_2`.
 
 The Stokes comparison uses `STOKES_EPS=1e-8`, a maximum of 2,000 outer
@@ -294,6 +333,10 @@ The tested preconditioners are:
   solve uses the lumped approximation formed from `B diag(A)^{-1} Bt`.
 - `MASS_BLOCK`: the separate preconditioning operator is `diag(A,Mp)`.
   PSBLAS nested diagonal composition applies BJAC/ILU(0) to both blocks.
+- `AMG_MASS_BLOCK`: the equation-(21) block-diagonal preconditioner uses a
+  fixed AMG V-cycle with matching Jacobi pre/post smoothing for velocity and
+  the lumped diagonal inverse of `Mp` for pressure. It is currently a serial
+  reference route and is run with MINRES.
 - `NEST`: the built-in PSBLAS nested Schur route uses BJAC/ILU(0) for its
   block solves and the same matrix-free Schur controls.
 - `NEST` with `SELF` or `SELFP`: PSBLAS explicitly assembles the approximate
@@ -302,7 +345,7 @@ The tested preconditioners are:
 
 The optimal-control comparison uses `NEST`, `OPTIMAL_EPS=1e-3`, a maximum of
 4,000 outer iterations, and an independent acceptance threshold of `1e-2`.
-The two configurations are:
+Relevant configurations include:
 
 - `DIAG`: independent diagonal field solves.  With the `MASS_DIAG` profile,
   fields 1 and 2 use diagonal approximations to their mass-like blocks and
@@ -311,30 +354,46 @@ The two configurations are:
   field 3 is treated through the matrix-free PDE-control Schur action.  The
   Schur solve uses at most 200 inner CG iterations.  No separate field-3 block
   or inner solver is enabled.
+- `MGW_EXACT`: exact dense solves are used for `A11`, `A22`, and the exact
+  Schur complement. This serial-only route is a correctness reference for the
+  three-iteration result, not a scalable alternative.
+
 
 ### Execution setup
 
-The main results below were collected on one Apple arm64 process (`np=1`) on
-macOS 26.5.1, using GNU Fortran 15.2.0, Open MPI 5.0.9, PSBLAS, AMG4PSBLAS, and
-OpenBLAS.  Each row is one representative run.  `Prec time` is preconditioner
-construction time and `Solve time` is the Krylov solve time reported by the
-driver; file reading and nested-matrix assembly are excluded.  Because the
-problems are small and each configuration was run only once, timing differences
-should be treated cautiously.  Iteration counts and final residuals are the
-more useful comparison here.
+All results below were rerun with one MPI process (`np=1`) on the current
+machine: Ubuntu 26.04 LTS under WSL2 (`x86_64`), on an AMD Ryzen 7 7735HS.
+The build uses GNU Fortran 15.2.0, Open MPI 5.0.10, CMake 4.2.3, and the Ubuntu
+reference BLAS/LAPACK 3.12.1 packages. The tested source revisions are
+AMG4PSBLAS `97c7fae3` and PSBLAS `157d5ea6`, including the uncommitted sample
+changes in this working tree.
+
+The current input directories are:
+
+```sh
+export STOKES_DIR=/home/jenny/dealii-test/build
+export OPTIMAL_DIR=/home/jenny/dealii-test/build_optimal
+```
+
+Each row is one representative run. `Prec time` is preconditioner construction
+time and `Solve time` is the Krylov solve time reported by the driver; file
+reading and nested-matrix assembly are excluded. Because the problems are small
+and each configuration was run only once, timing differences should be treated
+cautiously. Iteration counts and final residuals are the more useful comparison.
 
 ### Stokes benchmark report
 
 | Route | Outer iterations | Relative residual | Prec time (s) | Solve time (s) |
 |---|---:|---:|---:|---:|
-| `AMG_BLOCK`, `MATRIX_FREE` | 22 | 6.6543e-09 | 0.002422 | 0.074329 |
-| `AMG_BLOCK`, `SELF` | 40 | 4.2237e-09 | 0.004471 | 0.008340 |
-| `MASS_BLOCK` | 56 | 8.3966e-09 | 0.000901 | 0.003952 |
-| `NEST`, `MATRIX_FREE` | 137 | 5.2265e-09 | 0.001289 | 0.087068 |
-| `NEST`, `SELF/SELFP` | 40 | 8.3981e-09 | 0.001154 | 0.004906 |
+| `AMG_BLOCK`, `MATRIX_FREE` | 23 | 1.0235e-09 | 0.004373 | 0.084733 |
+| `AMG_BLOCK`, `SELF` | 41 | 4.8287e-09 | 0.004254 | 0.015657 |
+| `MASS_BLOCK` | 59 | 7.8751e-09 | 0.002866 | 0.006058 |
+| `NEST`, `MATRIX_FREE` | 135 | 7.1175e-09 | 0.001978 | 0.099826 |
+| `NEST`, `SELF/SELFP` | 41 | 5.6304e-09 | 0.003033 | 0.006594 |
+| `MINRES`, `AMG_MASS_BLOCK` | 112 | 7.3804e-09 | 0.002385 | 0.019207 |
 
 On this Stokes case, the matrix-free AMG/Schur route requires the fewest outer
-iterations.  The pressure-mass route converges in 56 iterations and is a useful
+iterations.  The pressure-mass route converges in 59 iterations and is a useful
 spectrally motivated block-diagonal baseline.  Its lower time in this single
 small run should not be interpreted as a scalability result: the matrix-free
 route performs nested iterative work per outer iteration, while `MASS_BLOCK`
@@ -356,39 +415,44 @@ STOKES_PREC=MASS_BLOCK \
 
 STOKES_PREC=NEST STOKES_SCHUR_SOLVE=SELFP \
 ./runs/amg_d_nest_stokes_file_test
+
+STOKES_METHOD=MINRES STOKES_PREC=AMG_MASS_BLOCK \
+./runs/amg_d_nest_stokes_file_test
 ```
 
 ### Optimal-control benchmark report
 
 All rows use one process, the refinement-5 degree-1 matrices
 (`n_u=n_y=n_p=1089`), `OPTIMAL_PROFILE=MASS_DIAG`, and the stopping controls
-described above.  The first two rows use `BICGSTAB`; the remaining three use `MINRES`
-with structurally symmetric diagonal nested preconditioners.
+described above. The first two rows use `BICGSTAB`; the remaining rows use
+`MINRES` with structurally symmetric block-diagonal preconditioners.
 
 | Krylov method | Route | Schur inner limit | Outer iterations | Solver error | Relative residual | Prec time (s) | Solve time (s) | Result |
 |---|---|---:|---:|---:|---:|---:|---:|---|
-| `BICGSTAB` | `NEST`, `DIAG` | -- | 1,134 | 9.8249e-04 | 9.8249e-04 | 0.000143 | 0.18755 | PASS |
-| `BICGSTAB` | `NEST`, `SCHUR_PDE_CONTROL`, `MATRIX_FREE` | 200 | 260 | 7.7616e-04 | 7.7616e-04 | 0.000046 | 4.3951 | PASS |
-| `MINRES` | `NEST`, `DIAG` | -- | 705 | 9.9964e-04 | 9.0928e-04 | 0.000400 | 0.060146 | PASS |
-| `MINRES` | `NEST`, `SCHUR_PDE_CONTROL_DIAG`, `A33` | -- | 705 | 9.9964e-04 | 9.0928e-04 | 0.000675 | 0.074232 | PASS |
-| `MINRES` | `AMG_KKT_DIAG`, shifted SPD/AMG | -- | 9,323 | 1.9986e-05 | 3.2862e-03 | 0.001416 | 1.1856 | PASS |
+| `BICGSTAB` | `NEST`, `DIAG` | -- | 847 | 9.4861e-04 | 9.4861e-04 | 0.000149 | 0.18018 | PASS |
+| `BICGSTAB` | `NEST`, `SCHUR_PDE_CONTROL`, `MATRIX_FREE` | 200 | 4,000 | 8.7289e+02 | 8.7289e+02 | 0.000237 | 94.735 | FAIL |
+| `MINRES` | `NEST`, `DIAG` | -- | 701 | 9.9986e-04 | 9.0965e-04 | 0.000129 | 0.079291 | PASS |
+| `MINRES` | `NEST`, `SCHUR_PDE_CONTROL_DIAG`, `A33` | -- | 701 | 9.9986e-04 | 9.0965e-04 | 0.000154 | 0.081658 | PASS |
+| `MINRES` | `AMG_KKT_DIAG`, shifted SPD/AMG | -- | 9,488 | 1.9968e-05 | 3.2601e-03 | 0.002796 | 2.5530 | PASS |
+| `MINRES` | `MGW_EXACT`, exact dense Schur | -- | 3 | 4.2410e-10 | 7.7501e-10 | 3.3199 | 0.017473 | PASS |
 
-The PDE-control Schur configuration reduces the outer iteration count from
-1,134 to 260.  Its solve time is higher for this small case because every outer
+On the current machine, the experimental PDE-control Schur configuration did
+not reproduce the earlier convergent result. It reached the 4,000-iteration
+limit with relative residual `8.7289e+02`; its row is therefore reported as a
+failure and should be treated as a regression target. Every outer
 preconditioner application can perform up to 200 matrix-free inner Schur
-iterations; the iteration reduction therefore does not imply a reduction in
-wall-clock time.
+iterations, which accounts for the long failed-run solve time.
 
 With the diagonal nested preconditioner, `MINRES` reduces the iteration count
-from 1,134 to 705 and the representative solve time from 0.18755 s to
-0.060146 s.  The reported MINRES solver estimate (`9.9964e-04`) differs from
-the independently computed true relative residual (`9.0928e-04`); both satisfy
+from 847 to 701 and the representative solve time from 0.18018 s to
+0.079291 s. The reported MINRES solver estimate (`9.9986e-04`) differs from
+the independently computed true relative residual (`9.0965e-04`); both satisfy
 their configured thresholds.
 
-The new `SCHUR_PDE_CONTROL_DIAG + A33` route also converges in 705 MINRES
+The new `SCHUR_PDE_CONTROL_DIAG + A33` route also converges in 701 MINRES
 iterations.  Here `A33=0`, so the configured `NONE` field-3 block provides the
 fixed identity fallback.  The measured read and assembly times for this run
-were 0.028390 s and 0.006892 s, respectively.  Its identical iteration count
+were 0.051312 s and 0.008227 s, respectively. Its identical iteration count
 and residual confirm that, with this fallback, it has the same mathematical
 action as the existing diagonal baseline while exercising the new
 block-diagonal Schur composition.
@@ -399,7 +463,14 @@ operator, the reusable AMG hierarchy, and MINRES compatibility.  It is faster
 than the earlier Jacobi-factor prototype but is not yet competitive with the
 simpler diagonal baseline in outer iterations or total solve time.
 
-To reproduce the five optimal-control rows:
+The serial `MGW_EXACT` route terminates in three MINRES iterations at
+`OPTIMAL_EPS=1e-3`, reproducing the ideal Murphy--Golub--Wathen result. Its
+3.3199-second setup time is dominated by forming and factoring the dense exact
+Schur complement. At `OPTIMAL_EPS=1e-12`, the same run required five
+iterations and reached a true relative residual of `1.3814e-13` because of
+finite-precision loss of the exact three-eigenvalue property.
+
+To reproduce the six optimal-control rows:
 
 ```sh
 OPTIMAL_PREC=NEST \
@@ -451,6 +522,16 @@ OPTIMAL_ITMAX=10000 \
 ./runs/amg_d_nest_optimal_control_test
 ```
 
+The exact reference row is reproduced separately with one process:
+
+```sh
+OPTIMAL_METHOD=MINRES \
+OPTIMAL_PREC=MGW_EXACT \
+OPTIMAL_EPS=1e-3 \
+OPTIMAL_CHECK_TOL=1e-2 \
+./runs/amg_d_nest_optimal_control_test
+```
+
 ## Build
 
 From this directory:
@@ -468,4 +549,46 @@ make clean
 ```
 
 A standalone CMake file is also provided for builds against installed PSBLAS and
-AMG4PSBLAS packages.
+AMG4PSBLAS packages. On the current WSL machine, configure and build it with:
+
+```sh
+cmake -S . -B build \
+  -DAMG4PSBLAS_INSTALL_DIR=/home/jenny/amg4psblas-install \
+  -DPSBLAS_INSTALL_DIR=/home/jenny/psblas3-install
+cmake --build build -j
+```
+
+CMake writes the executables under `build/runs/`. Run them from this source
+directory so that the documented relative input defaults resolve correctly, or
+set the absolute input directories shown in the execution setup:
+
+```sh
+STOKES_DIR=/home/jenny/dealii-test/build ./build/runs/amg_d_nest_stokes_file_test
+OPTIMAL_DIR=/home/jenny/dealii-test/build_optimal \
+  ./build/runs/amg_d_nest_optimal_control_test
+```
+
+## Automated regression checks
+
+The standalone CMake build registers analytic Stokes/KKT regressions on 1, 2, 3,
+and 4 MPI ranks, with SELF and MATRIX_FREE Schur solves and unit/tiny RHS.
+It also checks independently assembled shifted operators. No external files
+are required for these checks.
+
+Set `STOKES_TEST_DATA_DIR` and `OPTIMAL_TEST_DATA_DIR` during configuration to
+register external examples: Stokes AMG routes, optimal-control NEST/DIAG with
+MINRES, and the serial exact reference. Run:
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+`NEST_TEST_RANKS` controls MPI sizes. CTest locks file runs because they write
+solutions beside the inputs. Readers support real/general coordinate matrices
+and real/general single-column array vectors; other storage headers are rejected.
+
+Schur diagonal probing visits global columns collectively: it is an MPI
+reference implementation and is expensive for large systems. Analytic tests
+do not establish convergence of every inexact Schur/outer-solver combination.
+Experimental optimal-control matrix-free factorizations and shifted-AMG must
+still pass the independent true-residual check on each problem and MPI size.

@@ -14,6 +14,7 @@ endif()
 
 find_package(psblas REQUIRED PATHS ${PSBLAS_INSTALL_DIR})
 find_package(amg4psblas REQUIRED PATHS ${AMG4PSBLAS_INSTALL_DIR})
+find_package(MPI REQUIRED COMPONENTS Fortran)
 
 include_directories(
   "."
@@ -30,9 +31,17 @@ file(MAKE_DIRECTORY "${EXEDIR}")
 set(AMG_LIBS amg4psblas::amgprec)
 set(PSBLAS_LIBS psblas::util psblas::linsolve psblas::prec psblas::base)
 
+add_library(amg_d_nested_block_prec STATIC amg_d_nested_block_prec_mod.F90)
+target_link_libraries(amg_d_nested_block_prec PUBLIC
+  ${AMG_LIBS}
+  ${PSBLAS_LIBS}
+  MPI::MPI_Fortran
+  stdc++
+)
+
 function(create_nested_executable target source)
-  add_executable(${target} amg_d_nested_block_prec_mod.F90 ${source})
-  target_link_libraries(${target} PUBLIC ${AMG_LIBS} ${PSBLAS_LIBS})
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PUBLIC amg_d_nested_block_prec)
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${EXEDIR})
 endfunction()
 
